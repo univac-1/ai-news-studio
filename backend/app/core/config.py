@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     STATIC_FILES_DIR: str = ""
     VOICEVOX_BASE_URL: str = "http://localhost:50021"
     VOICEVOX_SPEAKER_ID: int = 3
+    GEMINI_PROJECT: str = ""
+    GEMINI_LOCATION: str = "us-central1"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
