@@ -70,6 +70,10 @@ jobs:
                         value: http://localhost:50021
                       - name: VOICEVOX_SPEAKER_ID
                         value: "3"
+                      - name: GEMINI_PROJECT
+                        value: ${{ secrets.GCP_PROJECT_ID }}
+                      - name: GEMINI_LOCATION
+                        value: us-central1
                     resources:
                       limits:
                         cpu: "2.0"
