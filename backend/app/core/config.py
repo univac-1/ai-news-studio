@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     FRONTEND_ORIGIN: str = "http://localhost:5173"
     STATIC_FILES_DIR: str = ""
+    VOICEVOX_BASE_URL: str = "http://localhost:50021"
+    VOICEVOX_SPEAKER_ID: int = 3
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

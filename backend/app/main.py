@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .api import drafts, health, news, used_news
+from .api import drafts, health, news, used_news, videos
 from .core.config import settings
 from .core.security import verify_credentials
 
@@ -23,6 +23,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(news.router, prefix="/api/news")
 app.include_router(drafts.router, prefix="/api/drafts")
 app.include_router(used_news.router, prefix="/api/used-news")
+app.include_router(videos.router, prefix="/api/videos")
 
 _dist = Path(settings.STATIC_FILES_DIR) if settings.STATIC_FILES_DIR else None
 

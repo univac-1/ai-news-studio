@@ -12,6 +12,10 @@ WORKDIR /workspace
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY backend/pyproject.toml backend/uv.lock backend/
 RUN cd backend && uv sync --frozen --no-dev --no-install-project
 

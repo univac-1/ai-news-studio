@@ -28,3 +28,19 @@ export interface UsedNewsEntry {
   id: string
   used_at: string
 }
+
+export interface VideoArtifact {
+  id: string
+  title: string
+  created_at: string
+  draft_generated_at: string
+  total_items: number
+  duration_seconds: number
+  video_path: string
+  subtitles_path: string
+  slide_count: number
+}
+
+export interface VideoArtifactList {
+  items: VideoArtifact[]
+}

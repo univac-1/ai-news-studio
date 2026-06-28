@@ -1,22 +1,27 @@
 import { useState } from 'react'
-import { Copy, Check, ChevronDown, ChevronUp, Video } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Check, ChevronDown, ChevronUp, Copy, Download, Loader2, Video } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useDraft } from '@/hooks/useDraft'
+import { useVideos } from '@/hooks/useVideos'
 import { VideoSegment } from '@/types/draft'
+import { api } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
+
   function handleCopy() {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
   }
+
   return (
     <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={handleCopy}>
       {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -25,9 +30,13 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
-function DraftSection({ title, children, copyText }: {
+function DraftSection({
+  title,
+  children,
+  copyText,
+}: {
   title: string
-  children: React.ReactNode
+  children: ReactNode
   copyText?: string
 }) {
   return (
@@ -43,17 +52,21 @@ function DraftSection({ title, children, copyText }: {
 
 function SegmentAccordion({ segment }: { segment: VideoSegment }) {
   const [open, setOpen] = useState(false)
+
   return (
     <div className="border rounded-lg overflow-hidden">
       <button
         className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-muted/50 transition-colors"
         onClick={() => setOpen(v => !v)}
       >
-        <span className="text-sm font-medium line-clamp-1">#{segment.number} {segment.headline}</span>
-        {open
-          ? <ChevronUp className="w-4 h-4 shrink-0 text-muted-foreground" />
-          : <ChevronDown className="w-4 h-4 shrink-0 text-muted-foreground" />
-        }
+        <span className="text-sm font-medium line-clamp-1">
+          #{segment.number} {segment.headline}
+        </span>
+        {open ? (
+          <ChevronUp className="w-4 h-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="w-4 h-4 shrink-0 text-muted-foreground" />
+        )}
       </button>
       {open && (
         <div className="px-3 pb-3 border-t bg-muted/20 space-y-2">
@@ -75,23 +88,84 @@ function SegmentAccordion({ segment }: { segment: VideoSegment }) {
 
 export function WeeklyDraftPage() {
   const { draft, loading, generating, error, generate } = useDraft()
+  const {
+    videos,
+    loading: videosLoading,
+    generating: videoGenerating,
+    error: videoError,
+    generate: generateVideo,
+  } = useVideos()
 
   return (
     <ScrollArea className="h-full">
       <div className="p-6 space-y-4 max-w-3xl mx-auto">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold">週次ドラフト</h2>
             {draft && (
               <p className="text-xs text-muted-foreground">
-                最終生成: {formatDate(draft.generated_at)} · {draft.total_items}件のニュースを使用
+                最終生成: {formatDate(draft.generated_at)} / {draft.total_items}件のニュースを使用
               </p>
             )}
           </div>
-          <Button onClick={generate} disabled={generating} size="sm">
+          <Button onClick={generate} disabled={generating} size="sm" className="shrink-0">
             {generating ? '生成中...' : draft ? '再生成' : '週次ドラフトを生成'}
           </Button>
         </div>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">
+            <div>
+              <CardTitle className="text-sm font-semibold">動画生成</CardTitle>
+              <p className="text-xs text-muted-foreground mt-1">
+                最新ドラフトから VOICEVOX 音声付きの 16:9 MP4 を生成します
+              </p>
+            </div>
+            <Button
+              onClick={generateVideo}
+              disabled={!draft || videoGenerating}
+              size="sm"
+              className="shrink-0"
+            >
+              {videoGenerating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {videoGenerating ? '生成中...' : '動画を生成'}
+            </Button>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-3">
+            {videoError && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {videoError}
+              </div>
+            )}
+            {videosLoading ? (
+              <Skeleton className="h-14 w-full rounded-lg" />
+            ) : videos.length === 0 ? (
+              <p className="text-sm text-muted-foreground">生成済み動画はまだありません</p>
+            ) : (
+              <div className="space-y-2">
+                {videos.slice(0, 5).map(video => (
+                  <div
+                    key={video.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border bg-white px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{video.title}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatDate(video.created_at)} / {Math.round(video.duration_seconds)}秒 / {video.slide_count}枚
+                      </p>
+                    </div>
+                    <Button asChild variant="outline" size="sm" className="shrink-0">
+                      <a href={api.getVideoDownloadUrl(video.id)} download>
+                        <Download className="w-3.5 h-3.5" />
+                        MP4
+                      </a>
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -112,7 +186,7 @@ export function WeeklyDraftPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <DraftSection title="タイトル候補" copyText={draft.title}>
+            <DraftSection title="タイトル案" copyText={draft.title}>
               <p className="text-sm font-medium leading-snug">{draft.title}</p>
             </DraftSection>
 
@@ -128,7 +202,7 @@ export function WeeklyDraftPage() {
               </CardHeader>
               <CardContent className="px-4 pb-4 space-y-3">
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1.5">イントロ（〜15秒）</p>
+                  <p className="text-xs font-medium text-muted-foreground mb-1.5">イントロ</p>
                   <p className="text-sm leading-relaxed bg-muted/30 rounded-lg px-3 py-2.5">
                     {draft.intro}
                   </p>
@@ -138,7 +212,7 @@ export function WeeklyDraftPage() {
 
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    本編セグメント（各60〜90秒）
+                    本編セグメント
                   </p>
                   {draft.segments.map(seg => (
                     <SegmentAccordion key={seg.number} segment={seg} />
@@ -148,7 +222,7 @@ export function WeeklyDraftPage() {
                 <Separator />
 
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1.5">アウトロ（〜15秒）</p>
+                  <p className="text-xs font-medium text-muted-foreground mb-1.5">アウトロ</p>
                   <p className="text-sm leading-relaxed bg-muted/30 rounded-lg px-3 py-2.5">
                     {draft.outro}
                   </p>
@@ -159,7 +233,9 @@ export function WeeklyDraftPage() {
             <DraftSection title="スライド案" copyText={draft.slide_outline.join('\n')}>
               <div className="space-y-1">
                 {draft.slide_outline.map((line, i) => (
-                  <p key={i} className="text-xs text-muted-foreground leading-relaxed">{line}</p>
+                  <p key={i} className="text-xs text-muted-foreground leading-relaxed">
+                    {line}
+                  </p>
                 ))}
               </div>
             </DraftSection>
@@ -170,7 +246,7 @@ export function WeeklyDraftPage() {
               </pre>
             </DraftSection>
 
-            <DraftSection title="概要欄（YouTube Description）" copyText={draft.description}>
+            <DraftSection title="YouTube 概要欄" copyText={draft.description}>
               <pre className="text-xs leading-relaxed whitespace-pre-wrap font-sans text-muted-foreground">
                 {draft.description}
               </pre>
@@ -189,7 +265,7 @@ export function WeeklyDraftPage() {
               </div>
             </DraftSection>
 
-            <DraftSection title="参照元URL" copyText={draft.reference_urls.join('\n')}>
+            <DraftSection title="参考 URL" copyText={draft.reference_urls.join('\n')}>
               <div className="space-y-1">
                 {draft.reference_urls.map((url, i) => (
                   <a
