@@ -82,7 +82,7 @@ jobs:
                     resources:
                       limits:
                         cpu: "2.0"
-                        memory: 2Gi
+                        memory: 4Gi
                     startupProbe:
                       httpGet:
                         path: /version
