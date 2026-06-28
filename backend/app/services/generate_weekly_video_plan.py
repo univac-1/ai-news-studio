@@ -97,7 +97,8 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
         f"▼ 今週取り上げたニュース\n{news_list_str}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📌 チャンネル登録・通知オンで最新情報をキャッチ！\n"
-        "━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "音声：VOICEVOX:ずんだもん"
     )
 
     hashtags = ["#AIニュース", "#AI速報", "#人工知能", "#機械学習"]
