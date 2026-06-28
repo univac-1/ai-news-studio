@@ -51,7 +51,6 @@ jobs:
                   autoscaling.knative.dev/maxScale: "1"
                   run.googleapis.com/execution-environment: gen2
                   run.googleapis.com/container-dependencies: '{"app":["voicevox"]}'
-                  run.googleapis.com/secrets: basic-auth-username:projects/${{ secrets.GCP_PROJECT_ID }}/secrets/basic-auth-username,basic-auth-password:projects/${{ secrets.GCP_PROJECT_ID }}/secrets/basic-auth-password
               spec:
                 serviceAccountName: ${{ secrets.GCP_SERVICE_ACCOUNT }}
                 containerConcurrency: 1
@@ -71,16 +70,6 @@ jobs:
                         value: http://localhost:50021
                       - name: VOICEVOX_SPEAKER_ID
                         value: "3"
-                      - name: BASIC_AUTH_USERNAME
-                        valueFrom:
-                          secretKeyRef:
-                            name: basic-auth-username
-                            key: latest
-                      - name: BASIC_AUTH_PASSWORD
-                        valueFrom:
-                          secretKeyRef:
-                            name: basic-auth-password
-                            key: latest
                     resources:
                       limits:
                         cpu: "2.0"
@@ -112,6 +101,12 @@ jobs:
           gcloud run services replace cloud-run-service.yaml \
             --region ${{ secrets.GCP_REGION }} \
             --platform managed
+
+          gcloud run services update ${{ env.SERVICE }} \
+            --region ${{ secrets.GCP_REGION }} \
+            --platform managed \
+            --container app \
+            --update-secrets BASIC_AUTH_USERNAME=basic-auth-username:latest,BASIC_AUTH_PASSWORD=basic-auth-password:latest
 
           gcloud run services add-iam-policy-binding ${{ env.SERVICE }} \
             --region ${{ secrets.GCP_REGION }} \
