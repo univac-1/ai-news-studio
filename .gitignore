@@ -1,0 +1,30 @@
+node_modules/
+frontend/node_modules/
+.vite/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+backend/.env
+backend/data/
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+__pycache__/
+
+settings.local.json
+
+# Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/

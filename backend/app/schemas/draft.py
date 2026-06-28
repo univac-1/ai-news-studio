@@ -1,0 +1,27 @@
+from pydantic import BaseModel
+
+
+class VideoSegment(BaseModel):
+    number: int
+    headline: str
+    summary: str
+    impact: str
+    action: str
+    slide_title: str
+    narration: str
+
+
+class VideoPlanDraft(BaseModel):
+    title: str
+    week_label: str
+    thumbnail_text: str
+    intro: str
+    segments: list[VideoSegment]
+    outro: str
+    slide_outline: list[str]
+    narration_script: str
+    description: str
+    hashtags: list[str]
+    reference_urls: list[str]
+    total_items: int
+    generated_at: str
