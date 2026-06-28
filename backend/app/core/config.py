@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     BASIC_AUTH_PASSWORD: str = "change-me"
     APP_ENV: str = "development"
     FRONTEND_ORIGIN: str = "http://localhost:5173"
+    STATIC_FILES_DIR: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -1,10 +1,8 @@
-from fastapi import APIRouter, Depends
-
-from ..core.security import verify_credentials
+from fastapi import APIRouter
 
 router = APIRouter()
 
 
 @router.get("/health")
-async def health_check(_: str = Depends(verify_credentials)):
+async def health_check():
     return {"status": "ok", "service": "ai-news-studio-backend"}
