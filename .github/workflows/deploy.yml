@@ -82,7 +82,7 @@ jobs:
                             key: latest
                     resources:
                       limits:
-                        cpu: "3"
+                        cpu: "2.0"
                         memory: 6Gi
                     volumeMounts:
                       - name: data
@@ -91,7 +91,7 @@ jobs:
                     image: voicevox/voicevox_engine:cpu-ubuntu20.04-latest
                     resources:
                       limits:
-                        cpu: "1"
+                        cpu: "2.0"
                         memory: 2Gi
                     startupProbe:
                       httpGet:
