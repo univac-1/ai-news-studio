@@ -41,6 +41,7 @@ jobs:
             --region ${{ secrets.GCP_REGION }} \
             --platform managed \
             --allow-unauthenticated \
+            --service-account ${{ secrets.GCP_SERVICE_ACCOUNT }} \
             --set-secrets BASIC_AUTH_USERNAME=basic-auth-username:latest \
             --set-secrets BASIC_AUTH_PASSWORD=basic-auth-password:latest \
             --set-env-vars APP_ENV=production \
