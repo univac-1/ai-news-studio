@@ -87,6 +87,70 @@ def _draw_wrapped(
     return y
 
 
+def _split_voice_text(text: str, max_chars: int = 160) -> list[str]:
+    normalized = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    if not normalized:
+        return [""]
+
+    chunks: list[str] = []
+    current = ""
+    break_chars = "。！？.!?"
+    for char in normalized:
+        current += char
+        if len(current) >= max_chars and char in break_chars:
+            chunks.append(current.strip())
+            current = ""
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    split_chunks: list[str] = []
+    for chunk in chunks:
+        while len(chunk) > max_chars:
+            split_chunks.append(chunk[:max_chars].strip())
+            chunk = chunk[max_chars:].strip()
+        if chunk:
+            split_chunks.append(chunk)
+
+    return split_chunks or [normalized]
+
+
+def _concat_wavs(paths: list[Path], output_path: Path) -> None:
+    audio_format = None
+    frames: list[bytes] = []
+    for path in paths:
+        with wave.open(str(path), "rb") as wav:
+            if audio_format is None:
+                audio_format = (
+                    wav.getnchannels(),
+                    wav.getsampwidth(),
+                    wav.getframerate(),
+                    wav.getcomptype(),
+                    wav.getcompname(),
+                )
+            elif (
+                wav.getnchannels(),
+                wav.getsampwidth(),
+                wav.getframerate(),
+                wav.getcomptype(),
+                wav.getcompname(),
+            ) != audio_format:
+                raise RuntimeError("VOICEVOX returned inconsistent WAV parameters")
+            frames.append(wav.readframes(wav.getnframes()))
+
+    if audio_format is None:
+        raise RuntimeError("VOICEVOX returned no audio")
+
+    with wave.open(str(output_path), "wb") as output:
+        channels, sample_width, frame_rate, compression_type, compression_name = audio_format
+        output.setnchannels(channels)
+        output.setsampwidth(sample_width)
+        output.setframerate(frame_rate)
+        output.setcomptype(compression_type, compression_name)
+        for frame in frames:
+            output.writeframes(frame)
+
+
 def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
     image = Image.new("RGB", (WIDTH, HEIGHT), "#f8fafc")
     draw = ImageDraw.Draw(image)
@@ -112,20 +176,44 @@ def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
 
 
 async def _synthesize_voice(text: str, path: Path) -> None:
-    async with httpx.AsyncClient(base_url=settings.VOICEVOX_BASE_URL, timeout=120.0) as client:
-        query_res = await client.post(
-            "/audio_query",
-            params={"text": text, "speaker": settings.VOICEVOX_SPEAKER_ID},
-        )
-        query_res.raise_for_status()
-        audio_res = await client.post(
-            "/synthesis",
-            params={"speaker": settings.VOICEVOX_SPEAKER_ID},
-            json=query_res.json(),
-        )
-        audio_res.raise_for_status()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(audio_res.content)
+    chunks = _split_voice_text(text)
+    async with httpx.AsyncClient(base_url=settings.VOICEVOX_BASE_URL, timeout=120.0) as client:
+        if len(chunks) == 1:
+            query_res = await client.post(
+                "/audio_query",
+                params={"text": chunks[0], "speaker": settings.VOICEVOX_SPEAKER_ID},
+            )
+            query_res.raise_for_status()
+            audio_res = await client.post(
+                "/synthesis",
+                params={"speaker": settings.VOICEVOX_SPEAKER_ID},
+                json=query_res.json(),
+            )
+            audio_res.raise_for_status()
+            path.write_bytes(audio_res.content)
+            return
+
+        chunk_dir = path.parent / f"{path.stem}_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        chunk_paths: list[Path] = []
+        for index, chunk in enumerate(chunks, 1):
+            chunk_path = chunk_dir / f"{path.stem}_{index:03}.wav"
+            query_res = await client.post(
+                "/audio_query",
+                params={"text": chunk, "speaker": settings.VOICEVOX_SPEAKER_ID},
+            )
+            query_res.raise_for_status()
+            audio_res = await client.post(
+                "/synthesis",
+                params={"speaker": settings.VOICEVOX_SPEAKER_ID},
+                json=query_res.json(),
+            )
+            audio_res.raise_for_status()
+            chunk_path.write_bytes(audio_res.content)
+            chunk_paths.append(chunk_path)
+
+    _concat_wavs(chunk_paths, path)
 
 
 def _wav_duration(path: Path) -> float:
