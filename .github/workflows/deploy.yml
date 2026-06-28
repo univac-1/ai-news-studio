@@ -51,7 +51,7 @@ jobs:
                   autoscaling.knative.dev/maxScale: "1"
                   run.googleapis.com/execution-environment: gen2
                   run.googleapis.com/container-dependencies: '{"app":["voicevox"]}'
-                  run.googleapis.com/secrets: basic-auth-username:basic-auth-username,basic-auth-password:basic-auth-password
+                  run.googleapis.com/secrets: basic-auth-username:projects/${{ secrets.GCP_PROJECT_ID }}/secrets/basic-auth-username,basic-auth-password:projects/${{ secrets.GCP_PROJECT_ID }}/secrets/basic-auth-password
               spec:
                 serviceAccountName: ${{ secrets.GCP_SERVICE_ACCOUNT }}
                 containerConcurrency: 1
