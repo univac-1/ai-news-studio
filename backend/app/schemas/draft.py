@@ -9,6 +9,7 @@ class VideoSegment(BaseModel):
     action: str
     slide_title: str
     narration: str
+    source: str = ""
 
 
 class VideoPlanDraft(BaseModel):
