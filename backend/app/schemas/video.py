@@ -12,6 +12,8 @@ class VideoArtifact(BaseModel):
     subtitles_path: str
     slide_count: int
     thumbnail_path: str = ""
+    chapters: str = ""
+    youtube_description: str = ""
 
 
 class VideoArtifactList(BaseModel):

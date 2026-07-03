@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Check, ChevronDown, ChevronUp, Copy, Download, Loader2, Video } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Copy, Download, Image, Loader2, Video } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -12,7 +12,7 @@ import { VideoSegment } from '@/types/draft'
 import { api } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, label = 'コピー' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false)
 
   function handleCopy() {
@@ -25,7 +25,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={handleCopy}>
       {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-      {copied ? 'コピー済み' : 'コピー'}
+      {copied ? 'コピー済み' : label}
     </Button>
   )
 }
@@ -154,12 +154,25 @@ export function WeeklyDraftPage() {
                         {formatDate(video.created_at)} / {Math.round(video.duration_seconds)}秒 / {video.slide_count}枚
                       </p>
                     </div>
-                    <Button asChild variant="outline" size="sm" className="shrink-0">
-                      <a href={api.getVideoDownloadUrl(video.id)} download>
-                        <Download className="w-3.5 h-3.5" />
-                        MP4
-                      </a>
-                    </Button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {video.youtube_description && (
+                        <CopyButton text={video.youtube_description} label="概要欄" />
+                      )}
+                      {video.thumbnail_path && (
+                        <Button asChild variant="outline" size="sm">
+                          <a href={api.getVideoThumbnailUrl(video.id)} download>
+                            <Image className="w-3.5 h-3.5" />
+                            サムネ
+                          </a>
+                        </Button>
+                      )}
+                      <Button asChild variant="outline" size="sm">
+                        <a href={api.getVideoDownloadUrl(video.id)} download>
+                          <Download className="w-3.5 h-3.5" />
+                          MP4
+                        </a>
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -186,9 +199,27 @@ export function WeeklyDraftPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <DraftSection title="タイトル案" copyText={draft.title}>
-              <p className="text-sm font-medium leading-snug">{draft.title}</p>
-            </DraftSection>
+            {(() => {
+              const hasCandidates = draft.title_candidates && draft.title_candidates.length >= 2
+              const copyContent = hasCandidates
+                ? draft.title_candidates!.join('\n')
+                : draft.title
+              return (
+                <DraftSection title="タイトル案" copyText={copyContent}>
+                  {hasCandidates ? (
+                    <ol className="text-sm font-medium leading-snug space-y-1">
+                      {draft.title_candidates!.map((candidate, i) => (
+                        <li key={i} className={i === 0 ? 'font-bold' : ''}>
+                          {i + 1}. {candidate}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-sm font-medium leading-snug">{draft.title}</p>
+                  )}
+                </DraftSection>
+              )
+            })()}
 
             <DraftSection title="サムネイル文言" copyText={draft.thumbnail_text}>
               <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
@@ -201,6 +232,15 @@ export function WeeklyDraftPage() {
                 <CardTitle className="text-sm font-semibold">台本</CardTitle>
               </CardHeader>
               <CardContent className="px-4 pb-4 space-y-3">
+                {draft.hook && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-1.5">フック（冒頭ティザー）</p>
+                    <p className="text-sm leading-relaxed bg-muted/30 rounded-lg px-3 py-2.5">
+                      {draft.hook}
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-1.5">イントロ</p>
                   <p className="text-sm leading-relaxed bg-muted/30 rounded-lg px-3 py-2.5">

@@ -115,10 +115,20 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
 
     reference_urls = [item.url for item in items if item.url]
 
+    hook = (
+        f"{items[0].title}。"
+        "このニュースが今週最大の注目です。"
+        "詳しくは本編で解説しますが、まずは今週の全体像からお届けします。"
+        if items
+        else ""
+    )
+
     return VideoPlanDraft(
         title=title,
+        title_candidates=[title],
         week_label=week_label,
         thumbnail_text=thumbnail_text,
+        hook=hook,
         intro=intro,
         segments=segments,
         outro=outro,

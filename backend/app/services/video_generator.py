@@ -162,41 +162,147 @@ def _concat_wavs(paths: list[Path], output_path: Path) -> None:
             output.writeframes(frame)
 
 
+def _format_chapter_time(seconds: float) -> str:
+    total_secs = int(seconds)
+    h = total_secs // 3600
+    m = (total_secs % 3600) // 60
+    s = total_secs % 60
+    if h > 0:
+        return f"{h}:{m:02}:{s:02}"
+    return f"{m}:{s:02}"
+
+
+def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
+    lines: list[str] = ["0:00 オープニング"]
+    outro_line: str | None = None
+    for slide, offset in zip(slides, slide_offsets):
+        if slide.kind == "segment":
+            lines.append(f"{_format_chapter_time(offset)} {slide.title}")
+        elif slide.kind == "outro":
+            outro_line = f"{_format_chapter_time(offset)} まとめ"
+    if outro_line:
+        lines.append(outro_line)
+    return "\n".join(lines)
+
+
 def _render_thumbnail(draft: VideoPlanDraft, path: Path) -> None:
     thumb_width, thumb_height = 1280, 720
-    image = Image.new("RGB", (thumb_width, thumb_height), "#111827")
-    draw = ImageDraw.Draw(image)
 
-    # Draw vertical gradient from #111827 to #1e3a8a
-    start_color = (17, 24, 39)      # #111827
-    end_color = (30, 58, 138)       # #1e3a8a
+    # Background gradient (#111827 → #1e3a8a), working in RGBA for compositing
+    image = Image.new("RGBA", (thumb_width, thumb_height))
+    draw = ImageDraw.Draw(image)
+    start_color = (17, 24, 39)    # #111827
+    end_color = (30, 58, 138)     # #1e3a8a
     for y in range(thumb_height):
         ratio = y / thumb_height
         r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
         g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
         b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
-        draw.line(((0, y), (thumb_width, y)), fill=(r, g, b))
+        draw.line(((0, y), (thumb_width, y)), fill=(r, g, b, 255))
 
-    title_font = _load_font(96, bold=True)
-    footer_font = _load_font(32)
+    # Semi-transparent accent shapes on separate overlay
+    overlay = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
+    ov_draw = ImageDraw.Draw(overlay)
+    # Large circle anchored to bottom-right corner
+    cx, cy, cr = thumb_width - 80, thumb_height + 30, 360
+    ov_draw.ellipse((cx - cr, cy - cr, cx + cr, cy + cr), fill=(59, 130, 246, 55))
+    # Small diagonal triangle accent top-right
+    ov_draw.polygon(
+        [(thumb_width - 260, 0), (thumb_width, 0), (thumb_width, 220)],
+        fill=(250, 204, 21, 40),
+    )
+    image = Image.alpha_composite(image, overlay)
+    draw = ImageDraw.Draw(image)
 
-    # Draw thumbnail_text in the center
+    # Red badge: "今週のAI速報"
+    badge_font = _load_font(34, bold=True)
+    badge_text = "今週のAI速報"
+    bb = badge_font.getbbox(badge_text)
+    btw, bth = bb[2] - bb[0], bb[3] - bb[1]
+    bpad_x, bpad_y = 22, 10
+    bx1, by1 = 56, 26
+    bx2, by2 = bx1 + btw + bpad_x * 2, by1 + bth + bpad_y * 2
+    draw.rounded_rectangle((bx1, by1, bx2, by2), radius=8, fill="#dc2626")
+    draw.text((bx1 + bpad_x, by1 + bpad_y), badge_text, font=badge_font, fill="#ffffff")
+
+    # Parse thumbnail_text: first line → main, rest → sub
     text_lines = draft.thumbnail_text.split("\n")
-    total_lines_height = sum(_load_font(96, bold=True).getbbox(line or " ")[3] - _load_font(96, bold=True).getbbox(line or " ")[1] for line in text_lines) + 20 * max(0, len(text_lines) - 1)
-    y_offset = (thumb_height - 100 - total_lines_height) // 2 + 20
+    main_line = text_lines[0] if text_lines else ""
+    sub_lines = [ln for ln in text_lines[1:] if ln]
 
-    for line in text_lines:
-        bbox = title_font.getbbox(line or " ")
-        line_height = bbox[3] - bbox[1]
-        line_width = bbox[2] - bbox[0]
-        x_center = (thumb_width - line_width) // 2
-        draw.text((x_center, y_offset), line, font=title_font, fill="#ffffff")
-        y_offset += line_height + 20
+    # Auto-fit main font (start 200, min 90, step -10) to fit 1150 px wide
+    main_size = 200
+    while main_size > 90:
+        mf = _load_font(main_size, bold=True)
+        mb = mf.getbbox(main_line or " ")
+        if (mb[2] - mb[0]) <= 1150:
+            break
+        main_size -= 10
+    main_font = _load_font(main_size, bold=True)
+    main_bbox = main_font.getbbox(main_line or " ")
+    main_h = main_bbox[3] - main_bbox[1]
 
-    # Draw "AI News Studio" at the bottom
-    draw.text((40, thumb_height - 60), "AI News Studio", font=footer_font, fill="#9ca3af")
+    # Auto-fit sub font (start at half of main, min 50, step -10)
+    sub_size = max(main_size // 2, 50)
+    if sub_lines:
+        while sub_size > 40:
+            sf_test = _load_font(sub_size, bold=True)
+            max_sw = max(
+                sf_test.getbbox(sl or " ")[2] - sf_test.getbbox(sl or " ")[0]
+                for sl in sub_lines
+            )
+            if max_sw <= 1150:
+                break
+            sub_size -= 10
+    sub_font = _load_font(sub_size, bold=True)
+
+    # Measure sub-line heights
+    line_gap = 20
+    sub_heights: list[int] = []
+    for sl in sub_lines:
+        sb = sub_font.getbbox(sl or " ")
+        sub_heights.append(sb[3] - sb[1])
+
+    total_text_h = main_h + sum(h + line_gap for h in sub_heights)
+
+    # Vertically center text block between badge bottom and footer area
+    footer_top = thumb_height - 70
+    content_top = by2 + 20
+    center_y = (content_top + footer_top) // 2
+    y_cur = center_y - total_text_h // 2
+
+    # Draw main line (yellow, heavy stroke)
+    main_w = main_bbox[2] - main_bbox[0]
+    draw.text(
+        ((thumb_width - main_w) // 2, y_cur),
+        main_line,
+        font=main_font,
+        fill="#facc15",
+        stroke_width=10,
+        stroke_fill="#111827",
+    )
+    y_cur += main_h + line_gap
+
+    # Draw sub lines (white, lighter stroke)
+    for sl, sh in zip(sub_lines, sub_heights):
+        sb = sub_font.getbbox(sl or " ")
+        sw = sb[2] - sb[0]
+        draw.text(
+            ((thumb_width - sw) // 2, y_cur),
+            sl,
+            font=sub_font,
+            fill="#ffffff",
+            stroke_width=6,
+            stroke_fill="#111827",
+        )
+        y_cur += sh + line_gap
+
+    # Footer label
+    footer_font = _load_font(28)
+    draw.text((40, thumb_height - 52), "AI News Studio", font=footer_font, fill="#9ca3af")
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path)
+    image.convert("RGB").save(path)
 
 
 def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
@@ -225,7 +331,12 @@ def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
     draw.text((80, 40), "AI News Studio", font=badge_font, fill="#ffffff")
     draw.text((WIDTH - 260, 44), f"{index}/{total}", font=meta_font, fill="#d1d5db")
 
-    accent = "#2563eb" if spec.kind in {"cover", "intro", "outro"} else "#f59e0b"
+    if spec.kind in {"cover", "intro", "outro"}:
+        accent = "#2563eb"
+    elif spec.kind == "hook":
+        accent = "#dc2626"
+    else:
+        accent = "#f59e0b"
     draw.rectangle((80, 180, 96, 880), fill=accent)
     _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
 
@@ -365,7 +476,12 @@ def _write_srt(
 
 
 def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
-    slides = [
+    slides: list[SlideSpec] = []
+    if draft.hook:
+        slides.append(
+            SlideSpec(kind="hook", title="今週の注目", body=draft.hook, narration=draft.hook)
+        )
+    slides.extend([
         SlideSpec(
             kind="cover",
             title=draft.title,
@@ -373,7 +489,7 @@ def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
             narration=draft.title,
         ),
         SlideSpec(kind="intro", title="今週のハイライト", body=draft.intro, narration=draft.intro),
-    ]
+    ])
     for segment in draft.segments:
         slides.append(
             SlideSpec(
@@ -492,6 +608,9 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     subtitles_path = work_dir / "subtitles.srt"
     _write_srt(all_chunk_durations, slide_offsets, subtitles_path)
 
+    chapters = _build_chapters(slides, slide_offsets)
+    youtube_description = draft.description + "\n\n▼ チャプター\n" + chapters
+
     artifact = VideoArtifact(
         id=video_id,
         title=draft.title,
@@ -503,6 +622,8 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         subtitles_path=subtitles_path.name,
         slide_count=len(slides),
         thumbnail_path="thumbnail.png",
+        chapters=chapters,
+        youtube_description=youtube_description,
     )
     (work_dir / "metadata.json").write_text(
         artifact.model_dump_json(indent=2), encoding="utf-8"
