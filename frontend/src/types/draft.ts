@@ -22,6 +22,8 @@ export interface VideoPlanDraft {
   reference_urls: string[]
   total_items: number
   generated_at: string
+  hook?: string
+  title_candidates?: string[]
 }
 
 export interface UsedNewsEntry {
@@ -39,6 +41,9 @@ export interface VideoArtifact {
   video_path: string
   subtitles_path: string
   slide_count: number
+  chapters?: string
+  youtube_description?: string
+  thumbnail_path?: string
 }
 
 export interface VideoArtifactList {

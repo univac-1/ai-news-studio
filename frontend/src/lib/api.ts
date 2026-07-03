@@ -30,4 +30,5 @@ export const api = {
     req<VideoArtifact>('/api/videos/generate-from-latest', { method: 'POST' }),
   getVideos: () => req<VideoArtifactList>('/api/videos'),
   getVideoDownloadUrl: (videoId: string) => `${BASE}/api/videos/${videoId}/download`,
+  getVideoThumbnailUrl: (videoId: string) => `${BASE}/api/videos/${videoId}/thumbnail`,
 }

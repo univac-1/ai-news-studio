@@ -14,8 +14,10 @@ class VideoSegment(BaseModel):
 
 class VideoPlanDraft(BaseModel):
     title: str
+    title_candidates: list[str] = []
     week_label: str
     thumbnail_text: str
+    hook: str = ""
     intro: str
     segments: list[VideoSegment]
     outro: str
