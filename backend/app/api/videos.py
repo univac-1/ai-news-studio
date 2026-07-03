@@ -9,6 +9,7 @@ from ..services.video_generator import (
     generate_video_from_draft,
     get_video_artifact,
     get_video_file,
+    get_video_thumbnail,
     list_video_artifacts,
 )
 
@@ -59,4 +60,16 @@ async def download_video(video_id: str, _: str = Depends(verify_credentials)):
         str(path),
         media_type="video/mp4",
         filename=f"ai-news-studio-{video_id}.mp4",
+    )
+
+
+@router.get("/{video_id}/thumbnail")
+async def get_thumbnail(video_id: str, _: str = Depends(verify_credentials)):
+    path = get_video_thumbnail(video_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="サムネイルが見つかりません。")
+    return FileResponse(
+        str(path),
+        media_type="image/png",
+        filename=f"ai-news-studio-{video_id}.png",
     )

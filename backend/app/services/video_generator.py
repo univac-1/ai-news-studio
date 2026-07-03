@@ -26,6 +26,9 @@ class SlideSpec:
     title: str
     body: str
     narration: str
+    source: str = ""
+    impact: str = ""
+    action: str = ""
 
 
 def _now_id() -> str:
@@ -43,6 +46,12 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
         if candidate and Path(candidate).exists():
             return ImageFont.truetype(candidate, size=size)
     return ImageFont.load_default()
+
+
+def _subtitle_font() -> str:
+    if Path("C:/Windows/Fonts/meiryo.ttc").exists():
+        return "Meiryo"
+    return "Noto Sans CJK JP"
 
 
 def _wrap_by_pixels(text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
@@ -94,11 +103,13 @@ def _split_voice_text(text: str, max_chars: int = 160) -> list[str]:
 
     chunks: list[str] = []
     current = ""
-    break_chars = "。！？.!?"
+    # 半角ピリオドは「Claude 3.5」等のバージョン表記を分断するため文境界に含めない
+    break_chars = "。！？!?"
     for char in normalized:
         current += char
-        if len(current) >= max_chars and char in break_chars:
-            chunks.append(current.strip())
+        if char in break_chars:
+            if current.strip():
+                chunks.append(current.strip())
             current = ""
 
     if current.strip():
@@ -151,14 +162,64 @@ def _concat_wavs(paths: list[Path], output_path: Path) -> None:
             output.writeframes(frame)
 
 
+def _render_thumbnail(draft: VideoPlanDraft, path: Path) -> None:
+    thumb_width, thumb_height = 1280, 720
+    image = Image.new("RGB", (thumb_width, thumb_height), "#111827")
+    draw = ImageDraw.Draw(image)
+
+    # Draw vertical gradient from #111827 to #1e3a8a
+    start_color = (17, 24, 39)      # #111827
+    end_color = (30, 58, 138)       # #1e3a8a
+    for y in range(thumb_height):
+        ratio = y / thumb_height
+        r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+        g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+        b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+        draw.line(((0, y), (thumb_width, y)), fill=(r, g, b))
+
+    title_font = _load_font(96, bold=True)
+    footer_font = _load_font(32)
+
+    # Draw thumbnail_text in the center
+    text_lines = draft.thumbnail_text.split("\n")
+    total_lines_height = sum(_load_font(96, bold=True).getbbox(line or " ")[3] - _load_font(96, bold=True).getbbox(line or " ")[1] for line in text_lines) + 20 * max(0, len(text_lines) - 1)
+    y_offset = (thumb_height - 100 - total_lines_height) // 2 + 20
+
+    for line in text_lines:
+        bbox = title_font.getbbox(line or " ")
+        line_height = bbox[3] - bbox[1]
+        line_width = bbox[2] - bbox[0]
+        x_center = (thumb_width - line_width) // 2
+        draw.text((x_center, y_offset), line, font=title_font, fill="#ffffff")
+        y_offset += line_height + 20
+
+    # Draw "AI News Studio" at the bottom
+    draw.text((40, thumb_height - 60), "AI News Studio", font=footer_font, fill="#9ca3af")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+
+
 def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
+    # Create image with gradient background
     image = Image.new("RGB", (WIDTH, HEIGHT), "#f8fafc")
     draw = ImageDraw.Draw(image)
+
+    # Draw vertical gradient from #f8fafc to #e2e8f0
+    start_color = (248, 250, 252)  # #f8fafc
+    end_color = (226, 232, 240)    # #e2e8f0
+    for y in range(HEIGHT):
+        ratio = y / HEIGHT
+        r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+        g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+        b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+        draw.line(((0, y), (WIDTH, y)), fill=(r, g, b))
 
     title_font = _load_font(68, bold=True)
     body_font = _load_font(40)
     meta_font = _load_font(28)
     badge_font = _load_font(30, bold=True)
+    label_font = _load_font(24, bold=True)
+    box_font = _load_font(32)
 
     draw.rectangle((0, 0, WIDTH, 120), fill="#111827")
     draw.text((80, 40), "AI News Studio", font=badge_font, fill="#ffffff")
@@ -167,36 +228,58 @@ def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
     accent = "#2563eb" if spec.kind in {"cover", "intro", "outro"} else "#f59e0b"
     draw.rectangle((80, 180, 96, 880), fill=accent)
     _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
-    _draw_wrapped(draw, (140, 520), spec.body, body_font, "#374151", 1580, 18, max_lines=8)
+
+    if spec.kind == "segment":
+        # For segment slides: reduced body text, then Impact/Action boxes
+        _draw_wrapped(draw, (140, 520), spec.body, body_font, "#374151", 1580, 18, max_lines=3)
+
+        # Impact and Action boxes
+        box_y_start = 720
+        box_width = 700
+        box_height = 150
+        box_x_left = 140
+        box_x_right = box_x_left + box_width + 60
+
+        # Impact box
+        impact_bg = "#fef3c7"
+        impact_label_color = "#92400e"
+        draw.rounded_rectangle(
+            (box_x_left, box_y_start, box_x_left + box_width, box_y_start + box_height),
+            radius=12, fill=impact_bg, outline="#f59e0b", width=2
+        )
+        draw.text((box_x_left + 16, box_y_start + 12), "Impact:", font=label_font, fill=impact_label_color)
+        _draw_wrapped(draw, (box_x_left + 16, box_y_start + 50), spec.impact, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
+
+        # Action box
+        action_bg = "#dbeafe"
+        action_label_color = "#1e40af"
+        draw.rounded_rectangle(
+            (box_x_right, box_y_start, box_x_right + box_width, box_y_start + box_height),
+            radius=12, fill=action_bg, outline="#3b82f6", width=2
+        )
+        draw.text((box_x_right + 16, box_y_start + 12), "Action:", font=label_font, fill=action_label_color)
+        _draw_wrapped(draw, (box_x_right + 16, box_y_start + 50), spec.action, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
+    else:
+        _draw_wrapped(draw, (140, 520), spec.body, body_font, "#374151", 1580, 18, max_lines=8)
 
     draw.rectangle((80, 925, WIDTH - 80, 928), fill="#e5e7eb")
-    draw.text((80, 955), "Generated from weekly AI news draft", font=meta_font, fill="#6b7280")
+    footer_text = "Generated from weekly AI news draft"
+    if spec.kind == "segment" and spec.source:
+        footer_text += f" | 出典: {spec.source}"
+    draw.text((80, 955), footer_text, font=meta_font, fill="#6b7280")
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
 
 
-async def _synthesize_voice(text: str, path: Path) -> None:
+async def _synthesize_voice(text: str, path: Path) -> list[tuple[str, float]]:
     path.parent.mkdir(parents=True, exist_ok=True)
     chunks = _split_voice_text(text)
-    async with httpx.AsyncClient(base_url=settings.VOICEVOX_BASE_URL, timeout=120.0) as client:
-        if len(chunks) == 1:
-            query_res = await client.post(
-                "/audio_query",
-                params={"text": chunks[0], "speaker": settings.VOICEVOX_SPEAKER_ID},
-            )
-            query_res.raise_for_status()
-            audio_res = await client.post(
-                "/synthesis",
-                params={"speaker": settings.VOICEVOX_SPEAKER_ID},
-                json=query_res.json(),
-            )
-            audio_res.raise_for_status()
-            path.write_bytes(audio_res.content)
-            return
+    chunk_dir = path.parent / f"{path.stem}_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_paths: list[Path] = []
+    chunk_durations: list[tuple[str, float]] = []
 
-        chunk_dir = path.parent / f"{path.stem}_chunks"
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-        chunk_paths: list[Path] = []
+    async with httpx.AsyncClient(base_url=settings.VOICEVOX_BASE_URL, timeout=120.0) as client:
         for index, chunk in enumerate(chunks, 1):
             chunk_path = chunk_dir / f"{path.stem}_{index:03}.wav"
             query_res = await client.post(
@@ -204,16 +287,21 @@ async def _synthesize_voice(text: str, path: Path) -> None:
                 params={"text": chunk, "speaker": settings.VOICEVOX_SPEAKER_ID},
             )
             query_res.raise_for_status()
+            query_json = query_res.json()
+            query_json["speedScale"] = settings.VOICEVOX_SPEED_SCALE
+            query_json["postPhonemeLength"] = settings.VOICEVOX_POST_PHONEME_LENGTH
             audio_res = await client.post(
                 "/synthesis",
                 params={"speaker": settings.VOICEVOX_SPEAKER_ID},
-                json=query_res.json(),
+                json=query_json,
             )
             audio_res.raise_for_status()
             chunk_path.write_bytes(audio_res.content)
             chunk_paths.append(chunk_path)
+            chunk_durations.append((chunk, _wav_duration(chunk_path)))
 
     _concat_wavs(chunk_paths, path)
+    return chunk_durations
 
 
 def _wav_duration(path: Path) -> float:
@@ -245,17 +333,35 @@ def _format_srt_time(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 
-def _write_srt(slides: list[SlideSpec], durations: list[float], path: Path) -> None:
+def _write_part_srt(chunk_durations: list[tuple[str, float]], path: Path) -> None:
     cursor = 0.0
-    chunks: list[str] = []
-    for i, (slide, duration) in enumerate(zip(slides, durations), 1):
-        end = cursor + max(duration, 1.0)
-        subtitle = "\n".join(textwrap.wrap(slide.narration.replace("\n", " "), width=42))
-        chunks.append(
-            f"{i}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{subtitle}\n"
-        )
+    lines: list[str] = []
+    for i, (text, dur) in enumerate(chunk_durations, 1):
+        end = cursor + dur
+        wrapped = "\n".join(textwrap.wrap(text.replace("\n", " "), width=42))
+        lines.append(f"{i}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{wrapped}\n")
         cursor = end
-    path.write_text("\n".join(chunks), encoding="utf-8")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_srt(
+    all_chunk_durations: list[list[tuple[str, float]]],
+    slide_offsets: list[float],
+    path: Path,
+) -> None:
+    cue_index = 1
+    lines: list[str] = []
+    for slide_offset, chunk_durations in zip(slide_offsets, all_chunk_durations):
+        cursor = slide_offset
+        for text, dur in chunk_durations:
+            end = cursor + dur
+            wrapped = "\n".join(textwrap.wrap(text.replace("\n", " "), width=42))
+            lines.append(
+                f"{cue_index}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{wrapped}\n"
+            )
+            cue_index += 1
+            cursor = end
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
@@ -269,13 +375,15 @@ def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
         SlideSpec(kind="intro", title="今週のハイライト", body=draft.intro, narration=draft.intro),
     ]
     for segment in draft.segments:
-        body = f"{segment.summary}\n\nImpact: {segment.impact}\nAction: {segment.action}"
         slides.append(
             SlideSpec(
                 kind="segment",
                 title=f"#{segment.number} {segment.headline}",
-                body=body,
+                body=segment.summary,
                 narration=segment.narration,
+                source=segment.source,
+                impact=segment.impact,
+                action=segment.action,
             )
         )
     slides.append(SlideSpec(kind="outro", title="まとめ", body=draft.outro, narration=draft.outro))
@@ -291,41 +399,67 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     work_dir.mkdir(parents=True, exist_ok=False)
     parts_dir.mkdir(parents=True, exist_ok=True)
 
+    # Generate thumbnail
+    _render_thumbnail(draft, work_dir / "thumbnail.png")
+
     slides = _build_slides(draft)
-    durations: list[float] = []
+    padded_durations: list[float] = []
+    all_chunk_durations: list[list[tuple[str, float]]] = []
+    font_name = _subtitle_font()
+
     for index, slide in enumerate(slides, 1):
         slide_path = slides_dir / f"slide_{index:03}.png"
         audio_path = audio_dir / f"audio_{index:03}.wav"
-        part_path = parts_dir / f"part_{index:03}.mp4"
+        part_srt_rel = f"parts/part_{index:03}.srt"
+        part_srt_path = work_dir / part_srt_rel
+
         _render_slide(slide, index, len(slides), slide_path)
-        await _synthesize_voice(slide.narration, audio_path)
-        duration = max(_wav_duration(audio_path), 1.0)
-        durations.append(duration)
+        chunk_durations = await _synthesize_voice(slide.narration, audio_path)
+
+        audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)
+        part_duration = audio_duration + 0.4
+        padded_durations.append(part_duration)
+        all_chunk_durations.append(chunk_durations)
+
+        _write_part_srt(chunk_durations, part_srt_path)
+
+        zoompan_frames = math.ceil(part_duration * 30)
+        fade_out_start = part_duration - 0.4
+        vf = (
+            f"zoompan=z='min(zoom+0.0004,1.08)':d={zoompan_frames}"
+            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30"
+            f",subtitles={part_srt_rel}"
+            f":force_style='FontName={font_name},FontSize=20,Outline=2,MarginV=40'"
+            f",fade=t=in:st=0:d=0.4"
+            f",fade=t=out:st={fade_out_start:.3f}:d=0.4"
+        )
         _run_ffmpeg(
             [
-                "-loop",
-                "1",
-                "-framerate",
-                "30",
                 "-i",
-                str(slide_path),
+                f"slides/slide_{index:03}.png",
                 "-i",
-                str(audio_path),
+                f"audio/audio_{index:03}.wav",
+                "-vf",
+                vf,
+                "-af",
+                "apad=pad_dur=0.4,loudnorm=I=-14:TP=-1.5:LRA=11",
                 "-t",
-                f"{math.ceil(duration * 1000) / 1000:.3f}",
+                f"{part_duration:.3f}",
                 "-c:v",
                 "libx264",
-                "-tune",
-                "stillimage",
                 "-c:a",
                 "aac",
                 "-b:a",
                 "192k",
                 "-pix_fmt",
                 "yuv420p",
-                "-shortest",
-                str(part_path),
-            ]
+                "-crf",
+                "18",
+                "-preset",
+                "medium",
+                f"parts/part_{index:03}.mp4",
+            ],
+            cwd=work_dir,
         )
 
     concat_file = work_dir / "concat.txt"
@@ -349,8 +483,14 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         cwd=work_dir,
     )
 
+    slide_offsets: list[float] = []
+    cursor = 0.0
+    for dur in padded_durations:
+        slide_offsets.append(cursor)
+        cursor += dur
+
     subtitles_path = work_dir / "subtitles.srt"
-    _write_srt(slides, durations, subtitles_path)
+    _write_srt(all_chunk_durations, slide_offsets, subtitles_path)
 
     artifact = VideoArtifact(
         id=video_id,
@@ -358,10 +498,11 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         created_at=datetime.now(timezone.utc).isoformat(),
         draft_generated_at=draft.generated_at,
         total_items=draft.total_items,
-        duration_seconds=round(sum(durations), 3),
+        duration_seconds=round(sum(padded_durations), 3),
         video_path=video_path.name,
         subtitles_path=subtitles_path.name,
         slide_count=len(slides),
+        thumbnail_path="thumbnail.png",
     )
     (work_dir / "metadata.json").write_text(
         artifact.model_dump_json(indent=2), encoding="utf-8"
@@ -390,6 +531,13 @@ def get_video_artifact(video_id: str) -> VideoArtifact | None:
 
 def get_video_file(video_id: str) -> Path | None:
     path = GENERATED_DIR / video_id / "video.mp4"
+    if not path.exists():
+        return None
+    return path
+
+
+def get_video_thumbnail(video_id: str) -> Path | None:
+    path = GENERATED_DIR / video_id / "thumbnail.png"
     if not path.exists():
         return None
     return path

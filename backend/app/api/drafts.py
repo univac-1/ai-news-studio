@@ -5,6 +5,7 @@ from ..schemas.draft import VideoPlanDraft
 from ..services.draft_store import get_latest_draft, save_draft
 from ..services.filter_priority import get_priority_a_news
 from ..services.generate_weekly_video_plan import generate_weekly_video_plan
+from ..services.polish_narration import polish_narration
 from ..services.select_news_for_video import select_news_for_video
 
 router = APIRouter()
@@ -20,6 +21,7 @@ async def generate_weekly(_: str = Depends(verify_credentials)):
         )
     items = await select_news_for_video(items)
     draft = generate_weekly_video_plan(items)
+    draft = await polish_narration(draft)
     save_draft(draft)
     return draft
 

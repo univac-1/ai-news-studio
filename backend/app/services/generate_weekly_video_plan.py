@@ -68,6 +68,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
                 action=item.action,
                 slide_title=f"#{i} {model_prefix}{item.title}",
                 narration=narration,
+                source=item.source,
             )
         )
 
