@@ -159,18 +159,14 @@ export function WeeklyDraftPage() {
                         <CopyButton text={video.youtube_description} label="概要欄" />
                       )}
                       {video.thumbnail_path && (
-                        <Button asChild variant="outline" size="sm">
-                          <a href={api.getVideoThumbnailUrl(video.id)} download>
-                            <Image className="w-3.5 h-3.5" />
-                            サムネ
-                          </a>
+                        <Button variant="outline" size="sm" onClick={() => api.downloadThumbnail(video.id)}>
+                          <Image className="w-3.5 h-3.5" />
+                          サムネ
                         </Button>
                       )}
-                      <Button asChild variant="outline" size="sm">
-                        <a href={api.getVideoDownloadUrl(video.id)} download>
-                          <Download className="w-3.5 h-3.5" />
-                          MP4
-                        </a>
+                      <Button variant="outline" size="sm" onClick={() => api.downloadVideo(video.id)}>
+                        <Download className="w-3.5 h-3.5" />
+                        MP4
                       </Button>
                     </div>
                   </div>

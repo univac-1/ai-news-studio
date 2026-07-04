@@ -29,6 +29,36 @@ export const api = {
   generateVideoFromLatest: () =>
     req<VideoArtifact>('/api/videos/generate-from-latest', { method: 'POST' }),
   getVideos: () => req<VideoArtifactList>('/api/videos'),
-  getVideoDownloadUrl: (videoId: string) => `${BASE}/api/videos/${videoId}/download`,
-  getVideoThumbnailUrl: (videoId: string) => `${BASE}/api/videos/${videoId}/thumbnail`,
+  downloadVideo: async (videoId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/videos/${videoId}/download`)
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`${res.status}: ${text}`)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ai-news-studio-${videoId}.mp4`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  },
+  downloadThumbnail: async (videoId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/videos/${videoId}/thumbnail`)
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`${res.status}: ${text}`)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ai-news-studio-${videoId}.png`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  },
 }
