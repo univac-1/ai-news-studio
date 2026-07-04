@@ -1,6 +1,5 @@
 import json
 import subprocess
-import textwrap
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -336,15 +335,15 @@ def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
         accent = "#dc2626"
     else:
         accent = "#f59e0b"
-    draw.rectangle((80, 180, 96, 880), fill=accent)
+    draw.rectangle((80, 180, 96, 810), fill=accent)
     _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
 
     if spec.kind == "segment":
         # For segment slides: reduced body text, then Impact/Action boxes
-        _draw_wrapped(draw, (140, 520), spec.body, body_font, "#374151", 1580, 18, max_lines=3)
+        _draw_wrapped(draw, (140, 490), spec.body, body_font, "#374151", 1580, 18, max_lines=2)
 
         # Impact and Action boxes
-        box_y_start = 720
+        box_y_start = 650
         box_width = 700
         box_height = 150
         box_x_left = 140
@@ -370,13 +369,14 @@ def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
         draw.text((box_x_right + 16, box_y_start + 12), "Action:", font=label_font, fill=action_label_color)
         _draw_wrapped(draw, (box_x_right + 16, box_y_start + 50), spec.action, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
     else:
-        _draw_wrapped(draw, (140, 520), spec.body, body_font, "#374151", 1580, 18, max_lines=8)
+        _draw_wrapped(draw, (140, 490), spec.body, body_font, "#374151", 1580, 18, max_lines=4)
 
-    draw.rectangle((80, 925, WIDTH - 80, 928), fill="#e5e7eb")
+    # Keep everything above y=860; the area below is reserved for burned-in subtitles
+    draw.rectangle((80, 830, WIDTH - 80, 833), fill="#e5e7eb")
     footer_text = "Generated from weekly AI news draft"
     if spec.kind == "segment" and spec.source:
         footer_text += f" | 出典: {spec.source}"
-    draw.text((80, 955), footer_text, font=meta_font, fill="#6b7280")
+    draw.text((80, 845), footer_text, font=meta_font, fill="#6b7280")
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
 
@@ -443,14 +443,73 @@ def _format_srt_time(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 
-def _write_part_srt(chunk_durations: list[tuple[str, float]], path: Path) -> None:
-    cursor = 0.0
+_SUBTITLE_BREAK_CHARS = "、。！？!?　 "
+
+
+def _split_subtitle_cues(
+    text: str,
+    duration: float,
+    max_line_chars: int = 24,
+    max_lines: int = 2,
+) -> list[tuple[str, float]]:
+    normalized = text.replace("\n", " ").strip()
+    max_cue_chars = max_line_chars * max_lines
+    if not normalized or len(normalized) <= max_cue_chars:
+        return [(normalized, duration)]
+
+    cues: list[str] = []
+    remaining = normalized
+    while len(remaining) > max_cue_chars:
+        window = remaining[:max_cue_chars]
+        split_at = max(window.rfind(ch) for ch in _SUBTITLE_BREAK_CHARS)
+        if split_at < max_cue_chars // 2:
+            split_at = max_cue_chars - 1
+        cues.append(remaining[: split_at + 1].strip())
+        remaining = remaining[split_at + 1 :].strip()
+    if remaining:
+        cues.append(remaining)
+
+    total_chars = sum(len(cue) for cue in cues) or 1
+    return [(cue, duration * len(cue) / total_chars) for cue in cues]
+
+
+def _wrap_cue_lines(text: str, max_line_chars: int) -> list[str]:
+    # textwrap は英単語・ハイフン優先で折って3行以上になり得るため、2行保証の自前分割を使う
+    if len(text) <= max_line_chars:
+        return [text]
+    min_split = len(text) - max_line_chars
+    window = text[:max_line_chars]
+    split_at = max(window.rfind(ch) for ch in _SUBTITLE_BREAK_CHARS)
+    if split_at + 1 < min_split:
+        split_at = max_line_chars - 1
+    first = text[: split_at + 1].rstrip()
+    second = text[split_at + 1 :].strip()
+    return [first, second] if second else [first]
+
+
+def _srt_cues(
+    chunk_durations: list[tuple[str, float]],
+    offset: float,
+    start_index: int,
+    max_line_chars: int = 24,
+) -> tuple[list[str], int]:
+    cursor = offset
+    index = start_index
     lines: list[str] = []
-    for i, (text, dur) in enumerate(chunk_durations, 1):
-        end = cursor + dur
-        wrapped = "\n".join(textwrap.wrap(text.replace("\n", " "), width=42))
-        lines.append(f"{i}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{wrapped}\n")
-        cursor = end
+    for text, dur in chunk_durations:
+        for cue_text, cue_dur in _split_subtitle_cues(text, dur, max_line_chars):
+            end = cursor + cue_dur
+            wrapped = "\n".join(_wrap_cue_lines(cue_text, max_line_chars))
+            lines.append(
+                f"{index}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{wrapped}\n"
+            )
+            index += 1
+            cursor = end
+    return lines, index
+
+
+def _write_part_srt(chunk_durations: list[tuple[str, float]], path: Path) -> None:
+    lines, _ = _srt_cues(chunk_durations, 0.0, 1)
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -462,15 +521,8 @@ def _write_srt(
     cue_index = 1
     lines: list[str] = []
     for slide_offset, chunk_durations in zip(slide_offsets, all_chunk_durations):
-        cursor = slide_offset
-        for text, dur in chunk_durations:
-            end = cursor + dur
-            wrapped = "\n".join(textwrap.wrap(text.replace("\n", " "), width=42))
-            lines.append(
-                f"{cue_index}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{wrapped}\n"
-            )
-            cue_index += 1
-            cursor = end
+        slide_lines, cue_index = _srt_cues(chunk_durations, slide_offset, cue_index)
+        lines.extend(slide_lines)
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -542,7 +594,8 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         vf = (
             f"setsar=1,fps=30"
             f",subtitles={part_srt_rel}"
-            f":force_style='FontName={font_name},FontSize=20,Outline=2,MarginV=40'"
+            f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
+            f",BackColour=&H60000000,MarginV=18,MarginL=30,MarginR=30'"
             f",fade=t=in:st=0:d=0.4"
             f",fade=t=out:st={fade_out_start:.3f}:d=0.4"
         )
