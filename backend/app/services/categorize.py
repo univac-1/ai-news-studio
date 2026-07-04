@@ -45,8 +45,9 @@ _KEYWORD_RULES: list[tuple[str, tuple[str, ...]]] = [
     (
         "devtools",
         (
+            # "api"/"sdk" はモデル提供ニュースのタグにも付く汎用語なので判定には使わない
             "github", "copilot", "codex", "cli", "ide", "vscode", "エディタ",
-            "developer tool", "開発者ツール", "コマンド", "sdk", "api",
+            "developer tool", "開発者ツール", "コマンドライン",
         ),
     ),
     (
