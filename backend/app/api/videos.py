@@ -1,6 +1,6 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ..core.security import verify_credentials
 from ..schemas.video import VideoArtifact, VideoArtifactList
@@ -56,10 +56,19 @@ async def download_video(video_id: str, _: str = Depends(verify_credentials)):
     path = get_video_file(video_id)
     if path is None:
         raise HTTPException(status_code=404, detail="動画ファイルが見つかりません。")
-    return FileResponse(
-        str(path),
+
+    def _iter():
+        try:
+            with open(path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        except OSError as exc:
+            raise RuntimeError(f"動画ファイルの読み込みに失敗しました: {exc}") from exc
+
+    return StreamingResponse(
+        _iter(),
         media_type="video/mp4",
-        filename=f"ai-news-studio-{video_id}.mp4",
+        headers={"Content-Disposition": f'attachment; filename="ai-news-studio-{video_id}.mp4"'},
     )
 
 
@@ -68,8 +77,17 @@ async def get_thumbnail(video_id: str, _: str = Depends(verify_credentials)):
     path = get_video_thumbnail(video_id)
     if path is None:
         raise HTTPException(status_code=404, detail="サムネイルが見つかりません。")
-    return FileResponse(
-        str(path),
+
+    def _iter():
+        try:
+            with open(path, "rb") as f:
+                while chunk := f.read(256 * 1024):
+                    yield chunk
+        except OSError as exc:
+            raise RuntimeError(f"サムネイルの読み込みに失敗しました: {exc}") from exc
+
+    return StreamingResponse(
+        _iter(),
         media_type="image/png",
-        filename=f"ai-news-studio-{video_id}.png",
+        headers={"Content-Disposition": f'attachment; filename="ai-news-studio-{video_id}.png"'},
     )
