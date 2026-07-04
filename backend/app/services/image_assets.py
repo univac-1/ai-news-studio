@@ -65,12 +65,16 @@ _THUMBNAIL_PROMPT = (
 )
 
 
+# 「infographic」「explaining」等の語はモデルにラベル文字の描画を誘発するため使わない。
+# 見出しは「テーマのインスピレーション」として渡し、文字なしの象徴的イラストに徹させる。
 _SEGMENT_ILLUSTRATION_PROMPT = (
-    "Flat vector illustration explaining this AI news topic for a Japanese news program: {topic}. "
-    "Clean modern editorial infographic style, flat 2D or subtle isometric, "
-    "dark navy background with blue, cyan and white accents, one clear central visual metaphor, "
-    "generous empty space at the bottom third for overlay text. "
-    "No text, no letters, no numbers, no logos, no watermark, no real human faces."
+    "A completely wordless, text-free symbolic illustration inspired by this theme: {topic}. "
+    "Flat vector editorial illustration, clean modern style, flat 2D or subtle isometric, "
+    "dark navy background with blue, cyan and white accents, one clear central visual metaphor "
+    "built only from objects, shapes and scenery, generous empty space in the bottom third. "
+    "Strictly no text of any kind: no words, no letters, no numbers, no typography, no captions, "
+    "no labels, no logos, no watermarks, no user interface, no screenshots, no signage. "
+    "Screens or displays, if any, must show only abstract glowing shapes. No real human faces."
 )
 
 
