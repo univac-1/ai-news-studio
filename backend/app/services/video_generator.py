@@ -9,9 +9,10 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 from ..core.config import settings
-from ..schemas.draft import SegmentVisual, VideoPlanDraft
+from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
 from ..schemas.video import VideoArtifact
 from .categorize import CategoryStyle, category_style
+from .generate_weekly_video_plan import TITLE_JA_MAX_CHARS, contains_japanese, shorten
 from .image_assets import ThemeImages, generate_theme_images
 from .kana_reading import build_reading_map, to_voice_text
 
@@ -32,6 +33,7 @@ class SlideEntry:
     number: int
     label: str
     category: str
+    reason: str = ""
 
 
 @dataclass
@@ -515,14 +517,16 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
 def _render_visual_panel(
     draw: ImageDraw.ImageDraw, visual: SegmentVisual, accent: str
 ) -> None:
-    """セグメントスライドの図解パネル(y=495〜640)。flow=3ステップ図 / command=コード風。"""
+    """セグメントスライドの図解パネル(y=495〜640)。flow=3〜4ステップ図 / command=コード風。"""
     top, bottom = 495, 640
     if visual.type == "flow":
-        box_w = 480
+        steps = visual.items[:4]
+        n = len(steps)
         gap = 70
-        box_font = _load_font(30, bold=True)
+        box_w = (1580 - (n - 1) * gap) // n
+        box_font = _load_font(30 if n == 3 else 26, bold=True)
         arrow_font = _load_font(44, bold=True)
-        for i, step in enumerate(visual.items[:3]):
+        for i, step in enumerate(steps):
             x1 = 140 + i * (box_w + gap)
             draw.rounded_rectangle(
                 (x1, top + 10, x1 + box_w, bottom - 10),
@@ -534,7 +538,7 @@ def _render_visual_panel(
             _draw_wrapped(
                 draw, (x1 + 20, top + 40), step, box_font, "#1f2937", box_w - 40, 10, max_lines=2
             )
-            if i < 2:
+            if i < n - 1:
                 arrow_x = x1 + box_w + 14
                 draw.text((arrow_x, (top + bottom) / 2 - 30), "→", font=arrow_font, fill=accent)
     else:  # command
@@ -644,6 +648,7 @@ def _render_slide(
         medal_colors = ["#eab308", "#9ca3af", "#b45309"]
         rank_font = _load_font(40, bold=True)
         rank_num_font = _load_font(34, bold=True)
+        reason_font = _load_font(26)
         y = 310
         for i, entry in enumerate(spec.entries[:3]):
             color = medal_colors[i]
@@ -656,7 +661,9 @@ def _render_slide(
                 font=rank_num_font,
                 fill="#ffffff",
             )
-            _draw_wrapped(draw, (250, y + 10), f"{entry.label}", rank_font, "#111827", 1450, 0, max_lines=1)
+            _draw_wrapped(draw, (250, y), f"{entry.label}", rank_font, "#111827", 1450, 0, max_lines=1)
+            if entry.reason:
+                _draw_wrapped(draw, (250, y + 52), entry.reason, reason_font, "#6b7280", 1450, 0, max_lines=1)
             y += 110
         rest = spec.entries[3:7]
         rest_font = _load_font(30)
@@ -672,8 +679,8 @@ def _render_slide(
         sub_y = 366
         if spec.headline and spec.headline not in spec.title:
             _draw_wrapped(draw, (140, sub_y), spec.headline, meta_font, "#6b7280", 1580, 0, max_lines=1)
-        body_max_lines = 1 if spec.visual else 2
-        _draw_wrapped(draw, (140, 415), spec.body, body_font, "#374151", 1580, 18, max_lines=body_max_lines)
+        # 1行要約に絞り、詳細はImpact/Actionボックスに任せる
+        _draw_wrapped(draw, (140, 415), spec.body, body_font, "#374151", 1580, 18, max_lines=1)
 
         if spec.visual:
             _render_visual_panel(draw, spec.visual, accent)
@@ -945,12 +952,22 @@ def _save_theme_assets(theme: ThemeImages, assets_dir: Path) -> None:
         theme.slide_bg.save(assets_dir / "slide_bg.png")
 
 
+def _display_label(segment: VideoSegment) -> str:
+    """スライドに出す表示ラベル。title_ja が規約(日本語・短尺)を満たさない限り、
+    フル英語見出しをそのまま主タイトル・区切り・ラインナップ・ランキングに出さない。"""
+    title_ja = segment.title_ja
+    if title_ja and contains_japanese(title_ja) and len(title_ja) <= TITLE_JA_MAX_CHARS + 4:
+        return title_ja
+    return shorten(segment.headline, 24)
+
+
 def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
     entries = [
         SlideEntry(
             number=segment.number,
-            label=segment.title_ja or segment.headline,
+            label=_display_label(segment),
             category=segment.category,
+            reason=segment.rank_reason,
         )
         for segment in draft.segments
     ]
@@ -972,7 +989,7 @@ def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
         )
     )
     for segment in draft.segments:
-        label = segment.title_ja or segment.headline
+        label = _display_label(segment)
         slides.append(
             SlideSpec(
                 kind="divider",

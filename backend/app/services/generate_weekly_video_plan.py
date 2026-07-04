@@ -1,13 +1,38 @@
+import re
 from datetime import datetime, timezone
 
 from ..schemas.draft import VideoPlanDraft, VideoSegment
 from ..schemas.news import NewsItem
 from .categorize import categorize_news
 
-# VOICEVOX speed 1.1 で約8〜9文字/秒。冒頭20秒に収めるための文字数バジェット
-HOOK_MAX_CHARS = 45
-OPENING_MAX_CHARS = 110
+# VOICEVOX speed1.1 ≈ 8〜8.5字/秒。フック+オープニング+区切り1.8秒で
+# 本編#1開始を20秒以内に収めるための文字数バジェット
+HOOK_MAX_CHARS = 40
+OPENING_MAX_CHARS = 95
 TITLE_JA_MAX_CHARS = 16
+
+_JAPANESE_RE = re.compile(r"[぀-ヿ一-鿿]")
+
+
+def contains_japanese(text: str) -> bool:
+    return bool(_JAPANESE_RE.search(text))
+
+
+def shorten(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def template_hook(title_ja: str) -> str:
+    return f"{shorten(title_ja, TITLE_JA_MAX_CHARS)}。今週最大のAIニュースです。"
+
+
+def template_intro(count: int) -> str:
+    return (
+        f"この動画では、今週の重要AIニュース{count}本を短時間でまとめて把握できます。"
+        "ラインナップはご覧のとおりです。それでは1本目からいきましょう。"
+    )
 
 
 def _week_range_label(items: list[NewsItem]) -> str:
@@ -61,11 +86,8 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
         title = f"今週のAIニュース速報（{week_label}）— 重要AI動向まとめ"
         thumbnail_text = f"今週のAI速報\n重要{len(items)}本まとめ"
 
-    # オープニング(5〜20秒想定)。価値提示→ラインナップ提示→本編へ。110字以内。
-    intro = (
-        f"この動画では、今週の重要AIニュース{len(items)}本を短時間でまとめて把握できます。"
-        "ラインナップはご覧のとおりです。それでは1本目からいきましょう。"
-    )
+    # オープニング(5〜20秒想定)。価値提示→ラインナップ提示→本編へ。95字以内。
+    intro = template_intro(len(items))
 
     segments: list[VideoSegment] = []
     for i, item in enumerate(items, 1):
@@ -76,6 +98,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
             f"ポイントは、{item.impact}\n"
             f"次のアクションとしては、{item.action}"
         )
+        rank_reason = shorten(item.impact.split("。")[0], 22) if item.impact else ""
         segments.append(
             VideoSegment(
                 number=i,
@@ -88,26 +111,23 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
                 source=item.source,
                 title_ja=title_ja,
                 category=categorize_news(item),
+                rank_reason=rank_reason,
             )
         )
 
-    # まとめは重要度ランキング形式(順位=選定順)
+    # まとめは重要度ランキング形式(順位=選定順)。各順位に短い理由を添える
     top3 = segments[:3]
-    ranking_lines = "。".join(
-        f"第{seg.number}位は、{seg.title_ja}" for seg in top3
+    ranking_reasons = "".join(
+        f"第{seg.number}位は、{seg.title_ja}。{seg.rank_reason}。" for seg in top3
     )
     outro = (
-        f"今週の重要度ランキングです。{ranking_lines}。"
+        f"今週の重要度ランキングです。{ranking_reasons}"
         "気になるニュースはチャプターから見返してください。"
         "来週も最新情報をまとめてお届けしますので、チャンネル登録・通知オンをお忘れなく！"
     )
 
-    # フック(0〜5秒想定)。45字以内で今週最大のニュースを一言。
-    hook = (
-        f"{segments[0].title_ja}。今週最大のAIニュースです。"
-        if segments
-        else ""
-    )
+    # フック(0〜5秒想定)。40字以内で今週最大のニュースを一言。
+    hook = template_hook(segments[0].title_ja) if segments else ""
 
     slide_outline = [
         "[フック] 今週最大のニュースを一言",

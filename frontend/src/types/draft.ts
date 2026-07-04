@@ -14,6 +14,7 @@ export interface VideoSegment {
   title_ja?: string
   category?: string
   visual?: SegmentVisual | null
+  rank_reason?: string
 }
 
 export interface VideoPlanDraft {

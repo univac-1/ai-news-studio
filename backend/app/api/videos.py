@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from ..core.security import verify_credentials
 from ..schemas.video import VideoArtifact, VideoArtifactList
 from ..services.draft_store import get_latest_draft
+from ..services.prepare_video_draft import prepare_draft_for_video
 from ..services.video_generator import (
     generate_video_from_draft,
     get_video_artifact,
@@ -25,6 +26,7 @@ async def generate_from_latest(_: str = Depends(verify_credentials)):
             detail="最新ドラフトがありません。先に週次ドラフトを生成してください。",
         )
     try:
+        draft = await prepare_draft_for_video(draft)
         return await generate_video_from_draft(draft)
     except httpx.HTTPError as exc:
         raise HTTPException(

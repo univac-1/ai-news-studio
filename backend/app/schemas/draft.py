@@ -21,6 +21,7 @@ class VideoSegment(BaseModel):
     title_ja: str = ""
     category: str = ""
     visual: SegmentVisual | None = None
+    rank_reason: str = ""
 
 
 class VideoPlanDraft(BaseModel):
