@@ -8,8 +8,11 @@ from ..core.config import settings
 from ..schemas.draft import SegmentVisual, VideoPlanDraft
 from .categorize import category_style
 from .generate_weekly_video_plan import (
+    ACTION_MAX_CHARS,
     HOOK_MAX_CHARS,
+    IMPACT_MAX_CHARS,
     OPENING_MAX_CHARS,
+    SUMMARY_MAX_CHARS,
     TITLE_JA_MAX_CHARS,
     contains_japanese,
 )
@@ -79,7 +82,10 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "3. narrations: 各セグメントのナレーション。自然な話し言葉に書き換え、"
             "「インパクト:」「アクション:」のようなラベル読み上げをやめて内容を文章に織り込む。"
             "「つまり何が重要か」「誰に影響するか」「視聴者が次に何をすべきか」が明確に伝わる構成にする。"
-            "セグメント間のつなぎ(「続いては〜」など)を入れる。事実・固有名詞・数値は変えない。\n"
+            "セグメント間のつなぎ(「続いては〜」など)を入れる。事実・固有名詞・数値は変えない。"
+            f"なお、要約は{SUMMARY_MAX_CHARS}文字以内、インパクトは{IMPACT_MAX_CHARS}文字以内、"
+            f"アクションは{ACTION_MAX_CHARS}文字以内を目安に簡潔にまとめられている前提のため、"
+            "織り込む際もこの分量感を保ち、冗長に膨らませないこと。\n"
             "4. segments_meta: 各セグメントについて次の3つ。\n"
             f"   - title_ja: スライド表示用の短い日本語タイトル。{TITLE_JA_MAX_CHARS}文字以内。"
             "英語見出しは意味を保って日本語化する。誇張・事実改変は禁止。\n"

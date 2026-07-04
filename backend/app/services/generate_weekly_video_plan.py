@@ -10,6 +10,10 @@ from .categorize import categorize_news
 HOOK_MAX_CHARS = 40
 OPENING_MAX_CHARS = 95
 TITLE_JA_MAX_CHARS = 16
+# セグメント本文(1行要約・Impact・Actionボックス)のフォント自動縮小に頼りすぎないための文字数バジェット
+SUMMARY_MAX_CHARS = 55
+IMPACT_MAX_CHARS = 40
+ACTION_MAX_CHARS = 40
 
 _JAPANESE_RE = re.compile(r"[぀-ヿ一-鿿]")
 
@@ -98,7 +102,8 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
             f"ポイントは、{item.impact}\n"
             f"次のアクションとしては、{item.action}"
         )
-        rank_reason = shorten(item.impact.split("。")[0], 22) if item.impact else ""
+        # ランキングの理由行は1行(約40字)まで描けるため、切り詰めは保険程度にとどめる
+        rank_reason = shorten(item.impact.split("。")[0], 40) if item.impact else ""
         segments.append(
             VideoSegment(
                 number=i,

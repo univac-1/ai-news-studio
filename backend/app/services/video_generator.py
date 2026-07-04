@@ -13,7 +13,7 @@ from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
 from ..schemas.video import VideoArtifact
 from .categorize import CategoryStyle, category_style
 from .generate_weekly_video_plan import TITLE_JA_MAX_CHARS, contains_japanese, shorten
-from .image_assets import ThemeImages, generate_theme_images
+from .image_assets import ThemeImages, generate_segment_images, generate_theme_images
 from .kana_reading import build_reading_map, to_voice_text
 
 BASE_DIR = Path(__file__).parent.parent.parent
@@ -50,6 +50,7 @@ class SlideSpec:
     headline: str = ""
     visual: SegmentVisual | None = None
     entries: list[SlideEntry] = field(default_factory=list)
+    image: Image.Image | None = None
 
 
 def _now_id() -> str:
@@ -123,6 +124,61 @@ def _draw_wrapped(
     if max_lines is not None and len(lines) > max_lines:
         lines = lines[:max_lines]
         lines[-1] = f"{lines[-1].rstrip()}..."
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=fill)
+        bbox = font.getbbox(line or " ")
+        y += bbox[3] - bbox[1] + line_gap
+    return y
+
+
+def _draw_text_vcentered(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    top: int,
+    height: int,
+    text: str,
+    font: ImageFont.ImageFont,
+    fill: str,
+) -> None:
+    """高さ height のボックス内にテキストを垂直センタリングして描く。
+    getbbox の上余白(bb[1])を打ち消して光学的な中央に合わせる。"""
+    bb = font.getbbox(text or " ")
+    draw.text((x, top + (height - (bb[3] - bb[1])) // 2 - bb[1]), text, font=font, fill=fill)
+
+
+def _draw_fitted(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    base_size: int,
+    min_size: int,
+    fill: str,
+    max_width: int,
+    line_gap: int,
+    max_lines: int,
+    bold: bool = False,
+    allow_ellipsis: bool = False,
+) -> int:
+    """base_size から2px刻みで縮小し、max_lines以内に全文が収まる最大サイズで描く。
+
+    min_sizeでも収まらない場合はmin_sizeで全行描く(省略記号は付けない)。
+    allow_ellipsis=Trueの場合のみ、min_sizeでも収まらない残り文を「...」で省略する
+    (英語原題の補助表示など、内容よりレイアウト優先の箇所向け)。
+    描き終えた次のyを返す。
+    """
+    x, y = xy
+    size = base_size
+    font = _load_font(size, bold)
+    lines = _wrap_by_pixels(text, font, max_width)
+    while len(lines) > max_lines and size > min_size:
+        size = max(size - 2, min_size)
+        font = _load_font(size, bold)
+        lines = _wrap_by_pixels(text, font, max_width)
+    if len(lines) > max_lines and allow_ellipsis:
+        lines = lines[:max_lines]
+        lines[-1] = f"{lines[-1].rstrip()}..."
+    # allow_ellipsis=Falseの場合、min_sizeでも max_lines に収まらないときは
+    # 省略せず全行描く(内容を欠落させない)
     for line in lines:
         draw.text((x, y), line, font=font, fill=fill)
         bbox = font.getbbox(line or " ")
@@ -479,7 +535,7 @@ def _draw_category_chip(
     x1 = right_x - chip_w
     draw.rounded_rectangle((x1, y, right_x, y + chip_h), radius=chip_h // 2, fill=style.color)
     _draw_category_icon(draw, x1 + pad_x, y + (chip_h - icon_size) // 2, icon_size, style.icon, "#ffffff")
-    draw.text((x1 + pad_x + icon_size + 10, y + 7), label, font=font, fill="#ffffff")
+    _draw_text_vcentered(draw, x1 + pad_x + icon_size + 10, y, chip_h, label, font, "#ffffff")
 
 
 def _text_width(font: ImageFont.ImageFont, text: str) -> int:
@@ -520,6 +576,52 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     image.save(path)
 
 
+def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
+    """ニュースごとのAI解説イラストスライド。全画面イラスト + 下部にカテゴリ#Nバッジと日本語タイトル。"""
+    style = category_style(spec.category)
+    if spec.image is not None:
+        image = _cover_crop(spec.image, WIDTH, HEIGHT).convert("RGBA")
+    else:
+        image = Image.new("RGBA", (WIDTH, HEIGHT), "#111827")
+
+    # 下半分に黒のグラデーションスクリムを重ねる(_render_thumbnailと同じ手法。強めのアルファで可読性確保)
+    scrim = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    scrim_draw = ImageDraw.Draw(scrim)
+    for y in range(HEIGHT // 2, HEIGHT):
+        ratio = (y - HEIGHT // 2) / (HEIGHT / 2)
+        scrim_draw.line(((0, y), (WIDTH, y)), fill=(0, 0, 0, int(200 * ratio)))
+    image = Image.alpha_composite(image, scrim)
+    draw = ImageDraw.Draw(image)
+
+    number_text = f"#{spec.number}"
+    label = spec.title.split(" ", 1)[1] if " " in spec.title else spec.title
+
+    badge_font = _load_font(30, bold=True)
+    title_font = _load_font(56, bold=True)
+
+    badge_h = 44
+    badge_pad_x = 20
+    badge_w = _text_width(badge_font, number_text) + badge_pad_x * 2
+    badge_x1, badge_y1 = 140, 760
+    draw.rounded_rectangle(
+        (badge_x1, badge_y1, badge_x1 + badge_w, badge_y1 + badge_h),
+        radius=badge_h // 2, fill=style.color,
+    )
+    _draw_text_vcentered(
+        draw, badge_x1 + badge_pad_x, badge_y1, badge_h, number_text, badge_font, "#ffffff"
+    )
+
+    title_y = badge_y1 + badge_h + 14
+    title_line = _wrap_by_pixels(label, title_font, WIDTH - 280)[0]
+    draw.text(
+        (140, title_y), title_line, font=title_font, fill="#ffffff",
+        stroke_width=3, stroke_fill="#111827",
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.convert("RGB").save(path)
+
+
 def _render_visual_panel(
     draw: ImageDraw.ImageDraw, visual: SegmentVisual, accent: str
 ) -> None:
@@ -558,13 +660,15 @@ def _render_visual_panel(
 
 def _render_slide(
     spec: SlideSpec,
-    index: int,
-    total: int,
     path: Path,
     background: Image.Image | None = None,
 ) -> None:
     if spec.kind == "divider":
         _render_divider_slide(spec, path)
+        return
+
+    if spec.kind == "illustration":
+        _render_illustration_slide(spec, path)
         return
 
     if background is not None:
@@ -597,17 +701,15 @@ def _render_slide(
     meta_font = _load_font(28)
     badge_font = _load_font(30, bold=True)
     label_font = _load_font(24, bold=True)
-    box_font = _load_font(32)
     chip_font = _load_font(30, bold=True)
 
     draw.rectangle((0, 0, WIDTH, 120), fill="#111827")
-    draw.text((80, 40), "AI News Studio", font=badge_font, fill="#ffffff")
-    draw.text((WIDTH - 260, 44), f"{index}/{total}", font=meta_font, fill="#d1d5db")
+    draw.text((80, 40), "今週のAIニュース", font=badge_font, fill="#ffffff")
 
     if spec.kind == "segment" and spec.category:
         accent = category_style(spec.category).color
-        # カテゴリチップをヘッダー内(ページ番号の左)に表示する
-        _draw_category_chip(draw, WIDTH - 320, 38, category_style(spec.category), chip_font)
+        # カテゴリチップをヘッダー内右端に表示する
+        _draw_category_chip(draw, WIDTH - 80, 38, category_style(spec.category), chip_font)
     elif spec.kind in {"cover", "intro", "outro", "opening", "ranking"}:
         accent = "#2563eb"
     elif spec.kind == "hook":
@@ -626,7 +728,6 @@ def _render_slide(
         # 5〜20秒: 価値提示 + ラインナップ一覧
         _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=1)
         _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), "#4b5563", 1580, 12, max_lines=1)
-        entry_font = _load_font(36, bold=True)
         num_font = _load_font(26, bold=True)
         y = 350
         shown = spec.entries[:7]
@@ -634,13 +735,18 @@ def _render_slide(
             style = category_style(entry.category)
             draw.rounded_rectangle((140, y, 216, y + 44), radius=10, fill=style.color)
             num_text = f"#{entry.number}"
-            draw.text(
-                (140 + (76 - _text_width(num_font, num_text)) / 2, y + 8),
+            _draw_text_vcentered(
+                draw,
+                int(140 + (76 - _text_width(num_font, num_text)) / 2),
+                y,
+                44,
                 num_text,
-                font=num_font,
-                fill="#ffffff",
+                num_font,
+                "#ffffff",
             )
-            _draw_wrapped(draw, (240, y + 2), entry.label, entry_font, "#1f2937", 1440, 0, max_lines=1)
+            _draw_fitted(
+                draw, (240, y + 2), entry.label, 36, 26, "#1f2937", 1440, 0, max_lines=1, bold=True
+            )
             y += 62
         if len(spec.entries) > len(shown):
             draw.text(
@@ -652,24 +758,29 @@ def _render_slide(
     elif spec.kind == "ranking":
         _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=1)
         medal_colors = ["#eab308", "#9ca3af", "#b45309"]
-        rank_font = _load_font(40, bold=True)
         rank_num_font = _load_font(34, bold=True)
-        reason_font = _load_font(26)
         y = 310
         for i, entry in enumerate(spec.entries[:3]):
             color = medal_colors[i]
             cx, cy = 178, y + 38
             draw.ellipse((cx - 36, cy - 36, cx + 36, cy + 36), fill=color)
             rank_text = f"{i + 1}"
-            draw.text(
-                (cx - _text_width(rank_num_font, rank_text) / 2, cy - 24),
+            _draw_text_vcentered(
+                draw,
+                int(cx - _text_width(rank_num_font, rank_text) / 2),
+                cy - 36,
+                72,
                 rank_text,
-                font=rank_num_font,
-                fill="#ffffff",
+                rank_num_font,
+                "#ffffff",
             )
-            _draw_wrapped(draw, (250, y), f"{entry.label}", rank_font, "#111827", 1450, 0, max_lines=1)
+            _draw_fitted(
+                draw, (250, y), f"{entry.label}", 40, 28, "#111827", 1450, 0, max_lines=1, bold=True
+            )
             if entry.reason:
-                _draw_wrapped(draw, (250, y + 52), entry.reason, reason_font, "#6b7280", 1450, 0, max_lines=1)
+                _draw_fitted(
+                    draw, (250, y + 52), entry.reason, 26, 22, "#6b7280", 1450, 0, max_lines=1
+                )
             y += 110
         rest = spec.entries[3:7]
         rest_font = _load_font(30)
@@ -680,13 +791,18 @@ def _render_slide(
         if len(spec.entries) > 7:
             draw.text((160, y), f"…ほか {len(spec.entries) - 7} 本", font=rest_font, fill="#6b7280")
     elif spec.kind == "segment":
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=2)
-        # 元の見出し(英語など)は事実の原典として小さく併記する
+        _draw_fitted(draw, (140, 180), spec.title, 68, 48, "#111827", 1580, 18, max_lines=2, bold=True)
+        # 元の見出し(英語など)は事実の原典として小さく併記する。補助情報なので、
+        # min_sizeまで縮小してもなお収まらない場合に限り「...」省略を許容する
         sub_y = 366
         if spec.headline and spec.headline not in spec.title:
-            _draw_wrapped(draw, (140, sub_y), spec.headline, meta_font, "#6b7280", 1580, 0, max_lines=1)
-        # 1行要約に絞り、詳細はImpact/Actionボックスに任せる
-        _draw_wrapped(draw, (140, 415), spec.body, body_font, "#374151", 1580, 18, max_lines=1)
+            _draw_fitted(
+                draw, (140, sub_y), spec.headline, 28, 20, "#6b7280", 1580, 0,
+                max_lines=1, allow_ellipsis=True,
+            )
+        # 詳細はImpact/Actionボックスに任せる。図解パネル(y=495)を侵食しないよう
+        # max_lines=1でまず縮小させ、min_sizeでも収まらない長文だけ28pxの複数行で描く
+        _draw_fitted(draw, (140, 415), spec.body, 40, 28, "#374151", 1580, 8, max_lines=1)
 
         if spec.visual:
             _render_visual_panel(draw, spec.visual, accent)
@@ -706,7 +822,12 @@ def _render_slide(
             radius=12, fill=impact_bg, outline="#f59e0b", width=2
         )
         draw.text((box_x_left + 16, box_y_start + 12), "何が変わるか", font=label_font, fill=impact_label_color)
-        _draw_wrapped(draw, (box_x_left + 16, box_y_start + 50), spec.impact, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
+        # ボックス内テキスト領域は高さ約95px。32px×3行はあふれるため max_lines=2 で
+        # 先に縮小させ、min_sizeでも収まらない長文だけ22pxの3行で描く
+        _draw_fitted(
+            draw, (box_x_left + 16, box_y_start + 50), spec.impact, 32, 22, "#1f2937",
+            box_width - 32, 10, max_lines=2,
+        )
 
         # Action box
         action_bg = "#dbeafe"
@@ -716,17 +837,18 @@ def _render_slide(
             radius=12, fill=action_bg, outline="#3b82f6", width=2
         )
         draw.text((box_x_right + 16, box_y_start + 12), "次にやること", font=label_font, fill=action_label_color)
-        _draw_wrapped(draw, (box_x_right + 16, box_y_start + 50), spec.action, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
+        _draw_fitted(
+            draw, (box_x_right + 16, box_y_start + 50), spec.action, 32, 22, "#1f2937",
+            box_width - 32, 10, max_lines=2,
+        )
     else:
         _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
         _draw_wrapped(draw, (140, 490), spec.body, body_font, "#374151", 1580, 18, max_lines=4)
 
     # Keep everything above y=860; the area below is reserved for burned-in subtitles
     draw.rectangle((80, 830, WIDTH - 80, 833), fill="#e5e7eb")
-    footer_text = "Generated from weekly AI news draft"
     if spec.kind == "segment" and spec.source:
-        footer_text += f" | 出典: {spec.source}"
-    draw.text((80, 845), footer_text, font=meta_font, fill="#6b7280")
+        draw.text((80, 845), f"出典: {spec.source}", font=meta_font, fill="#6b7280")
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
 
@@ -960,6 +1082,15 @@ def _save_theme_assets(theme: ThemeImages, assets_dir: Path) -> None:
         theme.slide_bg.save(assets_dir / "slide_bg.png")
 
 
+def _save_segment_image_assets(segment_images: dict[int, Image.Image], assets_dir: Path) -> None:
+    # 使用したセグメント解説イラストを成果物と一緒に保存する(再現・デバッグ用)
+    if not segment_images:
+        return
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    for number, image in segment_images.items():
+        image.save(assets_dir / f"segment_{number:02}.png")
+
+
 def _display_label(segment: VideoSegment) -> str:
     """スライドに出す表示ラベル。title_ja が規約(日本語・短尺)を満たさない限り、
     フル英語見出しをそのまま主タイトル・区切り・ラインナップ・ランキングに出さない。"""
@@ -969,7 +1100,10 @@ def _display_label(segment: VideoSegment) -> str:
     return shorten(segment.headline, 24)
 
 
-def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
+def _build_slides(
+    draft: VideoPlanDraft, segment_images: dict[int, Image.Image] | None = None
+) -> list[SlideSpec]:
+    segment_images = segment_images or {}
     entries = [
         SlideEntry(
             number=segment.number,
@@ -1008,12 +1142,36 @@ def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
                 category=segment.category,
             )
         )
+
+        # ニュースごとの解説イラストスライド。生成画像があり、かつナレーションの先頭1文を
+        # 切り出した後も20字以上の本文が残る場合のみ挿入する(短すぎる残りは不自然なため)
+        segment_narration = segment.narration
+        segment_image = segment_images.get(segment.number)
+        if segment_image is not None:
+            sentence_end = segment_narration.find("。")
+            if sentence_end != -1:
+                first_sentence = segment_narration[: sentence_end + 1]
+                rest_narration = segment_narration[sentence_end + 1 :].strip()
+                if len(rest_narration) >= 20:
+                    slides.append(
+                        SlideSpec(
+                            kind="illustration",
+                            title=f"#{segment.number} {label}",
+                            body="",
+                            narration=first_sentence,
+                            number=segment.number,
+                            category=segment.category,
+                            image=segment_image,
+                        )
+                    )
+                    segment_narration = rest_narration
+
         slides.append(
             SlideSpec(
                 kind="segment",
                 title=f"#{segment.number} {label}",
                 body=segment.summary,
-                narration=segment.narration,
+                narration=segment_narration,
                 source=segment.source,
                 impact=segment.impact,
                 action=segment.action,
@@ -1048,6 +1206,10 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     theme = await generate_theme_images(draft)
     _save_theme_assets(theme, work_dir / "assets")
 
+    # ニュースごとのAI解説イラストを生成(未設定・失敗したセグメントは辞書に含まれない)
+    segment_images = await generate_segment_images(draft.segments)
+    _save_segment_image_assets(segment_images, work_dir / "assets")
+
     # Generate thumbnail. Prefer Nano Banana Pro text rendering; keep the local
     # renderer as a fallback when image generation is unavailable or fails.
     if theme.thumbnail is not None:
@@ -1055,7 +1217,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     else:
         _render_thumbnail(draft, work_dir / "thumbnail.png", theme.thumbnail_bg)
 
-    slides = _build_slides(draft)
+    slides = _build_slides(draft, segment_images)
     reading_map = await build_reading_map(
         [slide.narration for slide in slides if slide.narration]
     )
@@ -1070,7 +1232,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         part_srt_rel = f"parts/part_{index:03}.srt"
         part_srt_path = work_dir / part_srt_rel
 
-        _render_slide(slide, index, len(slides), slide_path, theme.slide_bg)
+        _render_slide(slide, slide_path, theme.slide_bg)
 
         if slide.kind == "divider":
             # 区切りは無音・固定尺・字幕なし。WAVパラメータはVOICEVOX出力に揃える

@@ -9,7 +9,7 @@ from google.genai import types
 from PIL import Image
 
 from ..core.config import settings
-from ..schemas.draft import VideoPlanDraft
+from ..schemas.draft import VideoPlanDraft, VideoSegment
 
 BASE_DIR = Path(__file__).parent.parent.parent
 CACHE_DIR = BASE_DIR / "data" / "cache" / "images"
@@ -62,6 +62,15 @@ _THUMBNAIL_PROMPT = (
     "Messy UI, unreadable letters, misspelled Japanese, extra captions, random "
     "English text, distorted logos, childish cartoon style, generic cyberpunk, "
     "low contrast, too many subjects."
+)
+
+
+_SEGMENT_ILLUSTRATION_PROMPT = (
+    "Flat vector illustration explaining this AI news topic for a Japanese news program: {topic}. "
+    "Clean modern editorial infographic style, flat 2D or subtle isometric, "
+    "dark navy background with blue, cyan and white accents, one clear central visual metaphor, "
+    "generous empty space at the bottom third for overlay text. "
+    "No text, no letters, no numbers, no logos, no watermark, no real human faces."
 )
 
 
@@ -155,3 +164,19 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
         )
     slide_bg = await _fetch_image(settings.IMAGE_GEN_SLIDE_MODEL, _SLIDE_BG_PROMPT)
     return ThemeImages(thumbnail=thumbnail, thumbnail_bg=thumbnail_bg, slide_bg=slide_bg)
+
+
+async def generate_segment_images(segments: list[VideoSegment]) -> dict[int, Image.Image]:
+    """ニュースごとの解説イラストを生成する。失敗したセグメントは辞書に含めない。"""
+    if not settings.IMAGE_GEN_ENABLED or not settings.GEMINI_PROJECT:
+        return {}
+
+    images: dict[int, Image.Image] = {}
+    for segment in segments:
+        topic = f"{segment.headline}. {segment.summary}"[:300]
+        image = await _fetch_image(
+            settings.IMAGE_GEN_SLIDE_MODEL, _SEGMENT_ILLUSTRATION_PROMPT.format(topic=topic)
+        )
+        if image is not None:
+            images[segment.number] = image
+    return images

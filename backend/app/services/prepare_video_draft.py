@@ -18,8 +18,11 @@ from ..core.config import settings
 from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
 from .categorize import categorize_text
 from .generate_weekly_video_plan import (
+    ACTION_MAX_CHARS,
     HOOK_MAX_CHARS,
+    IMPACT_MAX_CHARS,
     OPENING_MAX_CHARS,
+    SUMMARY_MAX_CHARS,
     TITLE_JA_MAX_CHARS,
     contains_japanese,
     shorten,
@@ -40,6 +43,15 @@ def _valid_title_ja(t: str) -> bool:
     return bool(t) and contains_japanese(t) and len(t) <= TITLE_JA_MAX_CHARS + 4
 
 
+def _over_budget(seg: VideoSegment) -> bool:
+    """1行要約・Impact・Actionのいずれかが文字数バジェットを超過しているか。"""
+    return (
+        len(seg.summary) > SUMMARY_MAX_CHARS
+        or len(seg.impact) > IMPACT_MAX_CHARS
+        or len(seg.action) > ACTION_MAX_CHARS
+    )
+
+
 async def _fetch_meta_completions(segments: list[VideoSegment]) -> list[dict] | None:
     """title_ja等が不正なセグメントを1回のGemini呼び出しでまとめて補完する。
 
@@ -50,14 +62,15 @@ async def _fetch_meta_completions(segments: list[VideoSegment]) -> list[dict] | 
         model = GenerativeModel("gemini-2.5-flash")
 
         segments_text = "\n\n".join(
-            f"### セグメント{seg.number}\n見出し: {seg.headline}\n要約: {seg.summary}"
+            f"### セグメント{seg.number}\n見出し: {seg.headline}\n要約: {seg.summary}\n"
+            f"インパクト: {seg.impact}\nアクション: {seg.action}"
             for seg in segments
         )
 
         prompt = (
             "以下のAIニュース動画セグメントについて、各セグメントの表示用メタ情報を補完してください。\n\n"
             f"{segments_text}\n\n"
-            "各セグメントについて次の3つを生成:\n"
+            "各セグメントについて次の6つを生成:\n"
             f"- title_ja: スライド表示用の短い日本語タイトル。{TITLE_JA_MAX_CHARS}文字以内。"
             "英語見出しは意味を保って日本語化する。誇張・事実改変は禁止。\n"
             "- visual: 画面を補足する図解データ。該当する場合のみ。\n"
@@ -65,10 +78,14 @@ async def _fetch_meta_completions(segments: list[VideoSegment]) -> list[dict] | 
             "のような3〜4ステップ(各14文字以内)。\n"
             '  開発ツール系: {"type":"command","items":["コマンド例や利用イメージ(各40文字以内、最大3行)"]}。\n'
             "  どちらにも該当しない場合は null。無理に作らない。\n"
-            "- rank_reason: このニュースがなぜ重要かの一言理由。20文字以内。\n\n"
+            "- rank_reason: このニュースがなぜ重要かの一言理由。20文字以内。\n"
+            f"- summary: 元の要約を一行要約にした版。{SUMMARY_MAX_CHARS}文字以内。\n"
+            f"- impact: 元のインパクトを要約した版。視聴者への影響。{IMPACT_MAX_CHARS}文字以内。\n"
+            f"- action: 元のアクションを要約した版。視聴者が次にやること。{ACTION_MAX_CHARS}文字以内。\n"
+            "summary/impact/actionは元の文の事実を改変せず短く要約すること。誇張は禁止。\n\n"
             "出力はJSONのみ:\n"
             '{"segments": [{"title_ja": "...", "visual": {"type": "flow", "items": ["...", "...", "..."]}, '
-            '"rank_reason": "..."}, ...]}\n'
+            '"rank_reason": "...", "summary": "...", "impact": "...", "action": "..."}, ...]}\n'
             f"segmentsはセグメントと同数・同順({len(segments)}件)で返してください。説明は不要です。"
         )
 
@@ -97,9 +114,10 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
         for seg in segments
     ]
 
-    # 2. title_ja検証。無効なセグメントが1件でもあり、GEMINI_PROJECTが設定されていれば
-    # メタ補完のGemini呼び出しを1回だけ実行する(件数不一致・例外時は無視して続行)。
-    needs_meta = any(not _valid_title_ja(seg.title_ja) for seg in segments)
+    # 2. title_ja検証 + 文字数バジェット検証。無効・超過なセグメントが1件でもあり、
+    # GEMINI_PROJECTが設定されていればメタ補完のGemini呼び出しを1回だけ実行する
+    # (件数不一致・例外時は無視して続行)。
+    needs_meta = any(not _valid_title_ja(seg.title_ja) or _over_budget(seg) for seg in segments)
     if needs_meta and settings.GEMINI_PROJECT:
         completions = await _fetch_meta_completions(segments)
         if completions is not None:
@@ -127,6 +145,35 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
                     and len(raw_rank_reason.strip()) <= 20
                 ):
                     update["rank_reason"] = raw_rank_reason.strip()
+
+                # summary/impact/actionは、元の値がバジェット超過のフィールドについてのみ、
+                # meta側が非空・バジェット+5文字以内なら採用する。バジェット内の元の値は上書きしない。
+                if len(seg.summary) > SUMMARY_MAX_CHARS:
+                    raw_summary = meta.get("summary")
+                    if (
+                        isinstance(raw_summary, str)
+                        and raw_summary.strip()
+                        and len(raw_summary.strip()) <= SUMMARY_MAX_CHARS + 5
+                    ):
+                        update["summary"] = raw_summary.strip()
+
+                if len(seg.impact) > IMPACT_MAX_CHARS:
+                    raw_impact = meta.get("impact")
+                    if (
+                        isinstance(raw_impact, str)
+                        and raw_impact.strip()
+                        and len(raw_impact.strip()) <= IMPACT_MAX_CHARS + 5
+                    ):
+                        update["impact"] = raw_impact.strip()
+
+                if len(seg.action) > ACTION_MAX_CHARS:
+                    raw_action = meta.get("action")
+                    if (
+                        isinstance(raw_action, str)
+                        and raw_action.strip()
+                        and len(raw_action.strip()) <= ACTION_MAX_CHARS + 5
+                    ):
+                        update["action"] = raw_action.strip()
 
                 updated_segments.append(seg.model_copy(update=update) if update else seg)
             segments = updated_segments
@@ -167,7 +214,8 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
     with_rank_reason = []
     for seg in segments:
         if not seg.rank_reason:
-            reason = shorten(seg.impact.split("。")[0], 22) if seg.impact else ""
+            # 理由行は1行(約40字)まで描けるため、切り詰めは保険程度にとどめる
+            reason = shorten(seg.impact.split("。")[0], 40) if seg.impact else ""
             seg = seg.model_copy(update={"rank_reason": reason})
         with_rank_reason.append(seg)
     segments = with_rank_reason
