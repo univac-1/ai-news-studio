@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 from ..core.config import settings
 from ..schemas.draft import VideoPlanDraft
 from ..schemas.video import VideoArtifact
+from .kana_reading import build_reading_map, to_voice_text
 
 BASE_DIR = Path(__file__).parent.parent.parent
 GENERATED_DIR = BASE_DIR / "data" / "generated"
@@ -381,8 +382,14 @@ def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
     image.save(path)
 
 
-async def _synthesize_voice(text: str, path: Path) -> list[tuple[str, float]]:
+async def _synthesize_voice(
+    text: str,
+    path: Path,
+    reading_map: dict[str, str] | None = None,
+) -> list[tuple[str, float]]:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # チャンク分割は原文に対して行い、返り値のtextも原文を保つ(字幕は英語表記のまま)。
+    # VOICEVOXへはカナ変換後のテキストだけを渡す。
     chunks = _split_voice_text(text)
     chunk_dir = path.parent / f"{path.stem}_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -394,7 +401,10 @@ async def _synthesize_voice(text: str, path: Path) -> list[tuple[str, float]]:
             chunk_path = chunk_dir / f"{path.stem}_{index:03}.wav"
             query_res = await client.post(
                 "/audio_query",
-                params={"text": chunk, "speaker": settings.VOICEVOX_SPEAKER_ID},
+                params={
+                    "text": to_voice_text(chunk, reading_map),
+                    "speaker": settings.VOICEVOX_SPEAKER_ID,
+                },
             )
             query_res.raise_for_status()
             query_json = query_res.json()
@@ -570,6 +580,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     _render_thumbnail(draft, work_dir / "thumbnail.png")
 
     slides = _build_slides(draft)
+    reading_map = await build_reading_map([slide.narration for slide in slides])
     padded_durations: list[float] = []
     all_chunk_durations: list[list[tuple[str, float]]] = []
     font_name = _subtitle_font()
@@ -581,7 +592,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         part_srt_path = work_dir / part_srt_rel
 
         _render_slide(slide, index, len(slides), slide_path)
-        chunk_durations = await _synthesize_voice(slide.narration, audio_path)
+        chunk_durations = await _synthesize_voice(slide.narration, audio_path, reading_map)
 
         audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)
         part_duration = audio_duration + 0.4
@@ -659,6 +670,21 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
 
     subtitles_path = work_dir / "subtitles.srt"
     _write_srt(all_chunk_durations, slide_offsets, subtitles_path)
+
+    # 字幕原文と読み上げテキストの対応(カナ変換の検証用)
+    voice_texts = [
+        {
+            "slide": slide_index,
+            "chunks": [
+                {"text": chunk, "voice": to_voice_text(chunk, reading_map)}
+                for chunk, _ in chunk_durations
+            ],
+        }
+        for slide_index, chunk_durations in enumerate(all_chunk_durations, 1)
+    ]
+    (work_dir / "voice_texts.json").write_text(
+        json.dumps(voice_texts, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     chapters = _build_chapters(slides, slide_offsets)
     youtube_description = draft.description + "\n\n▼ チャプター\n" + chapters
