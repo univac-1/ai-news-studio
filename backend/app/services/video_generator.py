@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 from ..core.config import settings
 from ..schemas.draft import VideoPlanDraft
 from ..schemas.video import VideoArtifact
+from .image_assets import ThemeImages, generate_theme_images
 from .kana_reading import build_reading_map, to_voice_text
 
 BASE_DIR = Path(__file__).parent.parent.parent
@@ -184,34 +185,55 @@ def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
     return "\n".join(lines)
 
 
-def _render_thumbnail(draft: VideoPlanDraft, path: Path) -> None:
+def _cover_crop(image: Image.Image, width: int, height: int) -> Image.Image:
+    scale = max(width / image.width, height / image.height)
+    resized = image.resize((round(image.width * scale), round(image.height * scale)))
+    left = (resized.width - width) // 2
+    top = (resized.height - height) // 2
+    return resized.crop((left, top, left + width, top + height))
+
+
+def _render_thumbnail(
+    draft: VideoPlanDraft, path: Path, background: Image.Image | None = None
+) -> None:
     thumb_width, thumb_height = 1280, 720
 
-    # Background gradient (#111827 → #1e3a8a), working in RGBA for compositing
-    image = Image.new("RGBA", (thumb_width, thumb_height))
-    draw = ImageDraw.Draw(image)
-    start_color = (17, 24, 39)    # #111827
-    end_color = (30, 58, 138)     # #1e3a8a
-    for y in range(thumb_height):
-        ratio = y / thumb_height
-        r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
-        g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
-        b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
-        draw.line(((0, y), (thumb_width, y)), fill=(r, g, b, 255))
+    if background is not None:
+        image = _cover_crop(background, thumb_width, thumb_height).convert("RGBA")
+        # 生成背景の明るさに依存せず文字が読めるよう、下半分に黒のグラデーションスクリムを重ねる
+        scrim = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
+        scrim_draw = ImageDraw.Draw(scrim)
+        for y in range(thumb_height // 2, thumb_height):
+            ratio = (y - thumb_height // 2) / (thumb_height / 2)
+            scrim_draw.line(((0, y), (thumb_width, y)), fill=(0, 0, 0, int(160 * ratio)))
+        image = Image.alpha_composite(image, scrim)
+        draw = ImageDraw.Draw(image)
+    else:
+        # Background gradient (#111827 → #1e3a8a), working in RGBA for compositing
+        image = Image.new("RGBA", (thumb_width, thumb_height))
+        draw = ImageDraw.Draw(image)
+        start_color = (17, 24, 39)    # #111827
+        end_color = (30, 58, 138)     # #1e3a8a
+        for y in range(thumb_height):
+            ratio = y / thumb_height
+            r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+            g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+            b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+            draw.line(((0, y), (thumb_width, y)), fill=(r, g, b, 255))
 
-    # Semi-transparent accent shapes on separate overlay
-    overlay = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
-    ov_draw = ImageDraw.Draw(overlay)
-    # Large circle anchored to bottom-right corner
-    cx, cy, cr = thumb_width - 80, thumb_height + 30, 360
-    ov_draw.ellipse((cx - cr, cy - cr, cx + cr, cy + cr), fill=(59, 130, 246, 55))
-    # Small diagonal triangle accent top-right
-    ov_draw.polygon(
-        [(thumb_width - 260, 0), (thumb_width, 0), (thumb_width, 220)],
-        fill=(250, 204, 21, 40),
-    )
-    image = Image.alpha_composite(image, overlay)
-    draw = ImageDraw.Draw(image)
+        # Semi-transparent accent shapes on separate overlay
+        overlay = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
+        ov_draw = ImageDraw.Draw(overlay)
+        # Large circle anchored to bottom-right corner
+        cx, cy, cr = thumb_width - 80, thumb_height + 30, 360
+        ov_draw.ellipse((cx - cr, cy - cr, cx + cr, cy + cr), fill=(59, 130, 246, 55))
+        # Small diagonal triangle accent top-right
+        ov_draw.polygon(
+            [(thumb_width - 260, 0), (thumb_width, 0), (thumb_width, 220)],
+            fill=(250, 204, 21, 40),
+        )
+        image = Image.alpha_composite(image, overlay)
+        draw = ImageDraw.Draw(image)
 
     # Red badge: "今週のAI速報"
     badge_font = _load_font(34, bold=True)
@@ -304,20 +326,37 @@ def _render_thumbnail(draft: VideoPlanDraft, path: Path) -> None:
     image.convert("RGB").save(path)
 
 
-def _render_slide(spec: SlideSpec, index: int, total: int, path: Path) -> None:
-    # Create image with gradient background
-    image = Image.new("RGB", (WIDTH, HEIGHT), "#f8fafc")
-    draw = ImageDraw.Draw(image)
+def _render_slide(
+    spec: SlideSpec,
+    index: int,
+    total: int,
+    path: Path,
+    background: Image.Image | None = None,
+) -> None:
+    if background is not None:
+        # 生成背景の上に白の半透明パネルを敷き、テキストの可読性を背景に依存させない
+        base = _cover_crop(background, WIDTH, HEIGHT).convert("RGBA")
+        panel = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+        panel_draw = ImageDraw.Draw(panel)
+        panel_draw.rounded_rectangle(
+            (60, 150, WIDTH - 60, 880), radius=24, fill=(255, 255, 255, 215)
+        )
+        image = Image.alpha_composite(base, panel).convert("RGB")
+        draw = ImageDraw.Draw(image)
+    else:
+        # Create image with gradient background
+        image = Image.new("RGB", (WIDTH, HEIGHT), "#f8fafc")
+        draw = ImageDraw.Draw(image)
 
-    # Draw vertical gradient from #f8fafc to #e2e8f0
-    start_color = (248, 250, 252)  # #f8fafc
-    end_color = (226, 232, 240)    # #e2e8f0
-    for y in range(HEIGHT):
-        ratio = y / HEIGHT
-        r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
-        g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
-        b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
-        draw.line(((0, y), (WIDTH, y)), fill=(r, g, b))
+        # Draw vertical gradient from #f8fafc to #e2e8f0
+        start_color = (248, 250, 252)  # #f8fafc
+        end_color = (226, 232, 240)    # #e2e8f0
+        for y in range(HEIGHT):
+            ratio = y / HEIGHT
+            r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+            g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+            b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+            draw.line(((0, y), (WIDTH, y)), fill=(r, g, b))
 
     title_font = _load_font(68, bold=True)
     body_font = _load_font(40)
@@ -536,6 +575,17 @@ def _write_srt(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _save_theme_assets(theme: ThemeImages, assets_dir: Path) -> None:
+    # 使用した生成背景を成果物と一緒に保存する(再現・デバッグ用)
+    if theme.thumbnail_bg is None and theme.slide_bg is None:
+        return
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    if theme.thumbnail_bg is not None:
+        theme.thumbnail_bg.save(assets_dir / "thumbnail_bg.png")
+    if theme.slide_bg is not None:
+        theme.slide_bg.save(assets_dir / "slide_bg.png")
+
+
 def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
     slides: list[SlideSpec] = []
     if draft.hook:
@@ -576,8 +626,12 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     work_dir.mkdir(parents=True, exist_ok=False)
     parts_dir.mkdir(parents=True, exist_ok=True)
 
+    # 背景画像を生成(未設定・失敗時は None で従来デザインにフォールバック)
+    theme = await generate_theme_images(draft)
+    _save_theme_assets(theme, work_dir / "assets")
+
     # Generate thumbnail
-    _render_thumbnail(draft, work_dir / "thumbnail.png")
+    _render_thumbnail(draft, work_dir / "thumbnail.png", theme.thumbnail_bg)
 
     slides = _build_slides(draft)
     reading_map = await build_reading_map([slide.narration for slide in slides])
@@ -591,7 +645,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         part_srt_rel = f"parts/part_{index:03}.srt"
         part_srt_path = work_dir / part_srt_rel
 
-        _render_slide(slide, index, len(slides), slide_path)
+        _render_slide(slide, index, len(slides), slide_path, theme.slide_bg)
         chunk_durations = await _synthesize_voice(slide.narration, audio_path, reading_map)
 
         audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)

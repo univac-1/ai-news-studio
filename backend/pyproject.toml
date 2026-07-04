@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pillow>=12.2.0",
     "google-cloud-aiplatform>=1.71",
+    "google-genai>=1.0",
     "alkana>=0.0.3",
 ]
 

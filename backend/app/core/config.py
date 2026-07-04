@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     VOICEVOX_POST_PHONEME_LENGTH: float = 0.3
     GEMINI_PROJECT: str = ""
     GEMINI_LOCATION: str = "us-central1"
+    IMAGE_GEN_ENABLED: bool = True
+    IMAGE_GEN_MODEL: str = "gemini-2.5-flash-image"
+    # gemini-2.5-flash-image は Vertex AI では global ロケーション提供のため、
+    # テキスト用の GEMINI_LOCATION とは別に持つ
+    IMAGE_GEN_LOCATION: str = "global"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
