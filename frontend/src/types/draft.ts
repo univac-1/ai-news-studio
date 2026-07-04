@@ -1,3 +1,8 @@
+export interface SegmentVisual {
+  type: 'flow' | 'command'
+  items: string[]
+}
+
 export interface VideoSegment {
   number: number
   headline: string
@@ -6,12 +11,16 @@ export interface VideoSegment {
   action: string
   slide_title: string
   narration: string
+  title_ja?: string
+  category?: string
+  visual?: SegmentVisual | null
 }
 
 export interface VideoPlanDraft {
   title: string
   week_label: string
   thumbnail_text: string
+  thumbnail_text_candidates?: string[]
   intro: string
   segments: VideoSegment[]
   outro: string
@@ -44,6 +53,8 @@ export interface VideoArtifact {
   chapters?: string
   youtube_description?: string
   thumbnail_path?: string
+  title_candidates?: string[]
+  thumbnail_text_candidates?: string[]
 }
 
 export interface VideoArtifactList {

@@ -1,4 +1,12 @@
+from typing import Literal
+
 from pydantic import BaseModel
+
+
+class SegmentVisual(BaseModel):
+    # flow: 攻撃フロー等の3ステップ図 / command: コマンド・利用イメージのコードブロック
+    type: Literal["flow", "command"]
+    items: list[str]
 
 
 class VideoSegment(BaseModel):
@@ -10,6 +18,9 @@ class VideoSegment(BaseModel):
     slide_title: str
     narration: str
     source: str = ""
+    title_ja: str = ""
+    category: str = ""
+    visual: SegmentVisual | None = None
 
 
 class VideoPlanDraft(BaseModel):
@@ -17,6 +28,7 @@ class VideoPlanDraft(BaseModel):
     title_candidates: list[str] = []
     week_label: str
     thumbnail_text: str
+    thumbnail_text_candidates: list[str] = []
     hook: str = ""
     intro: str
     segments: list[VideoSegment]

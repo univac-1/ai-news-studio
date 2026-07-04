@@ -1,7 +1,7 @@
 import json
 import subprocess
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,8 +9,9 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 from ..core.config import settings
-from ..schemas.draft import VideoPlanDraft
+from ..schemas.draft import SegmentVisual, VideoPlanDraft
 from ..schemas.video import VideoArtifact
+from .categorize import CategoryStyle, category_style
 from .image_assets import ThemeImages, generate_theme_images
 from .kana_reading import build_reading_map, to_voice_text
 
@@ -18,6 +19,19 @@ BASE_DIR = Path(__file__).parent.parent.parent
 GENERATED_DIR = BASE_DIR / "data" / "generated"
 WIDTH = 1920
 HEIGHT = 1080
+# ニュース間の区切りスライドは無音・固定尺(テンポ優先で2秒未満)
+DIVIDER_DURATION = 1.8
+# YouTube向けラウドネス目標(最終2パスloudnormで保証する)
+LOUDNESS_I = -16.0
+LOUDNESS_TP = -1.5
+LOUDNESS_LRA = 11.0
+
+
+@dataclass
+class SlideEntry:
+    number: int
+    label: str
+    category: str
 
 
 @dataclass
@@ -29,6 +43,11 @@ class SlideSpec:
     source: str = ""
     impact: str = ""
     action: str = ""
+    number: int = 0
+    category: str = ""
+    headline: str = ""
+    visual: SegmentVisual | None = None
+    entries: list[SlideEntry] = field(default_factory=list)
 
 
 def _now_id() -> str:
@@ -46,6 +65,19 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
         if candidate and Path(candidate).exists():
             return ImageFont.truetype(candidate, size=size)
     return ImageFont.load_default()
+
+
+def _load_mono_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    # コマンド例の描画用。等幅が見つからなければ通常フォントにフォールバック
+    candidates = [
+        "C:/Windows/Fonts/consola.ttf",
+        "C:/Windows/Fonts/CascadiaMono.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, size=size)
+    return _load_font(size)
 
 
 def _subtitle_font() -> str:
@@ -162,6 +194,29 @@ def _concat_wavs(paths: list[Path], output_path: Path) -> None:
             output.writeframes(frame)
 
 
+def _wav_params(path: Path) -> tuple[int, int, int]:
+    with wave.open(str(path), "rb") as wav:
+        return wav.getnchannels(), wav.getsampwidth(), wav.getframerate()
+
+
+def _write_silent_wav(
+    path: Path,
+    duration: float,
+    channels: int,
+    sample_width: int,
+    frame_rate: int,
+) -> None:
+    # 区切りスライド用の無音音声。VOICEVOX出力と同一パラメータで作ることで、
+    # パートごとのAACエンコード条件を揃え concat -c copy を成立させる
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame_count = int(round(duration * frame_rate))
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(channels)
+        output.setsampwidth(sample_width)
+        output.setframerate(frame_rate)
+        output.writeframes(b"\x00" * frame_count * channels * sample_width)
+
+
 def _format_chapter_time(seconds: float) -> str:
     total_secs = int(seconds)
     h = total_secs // 3600
@@ -175,11 +230,17 @@ def _format_chapter_time(seconds: float) -> str:
 def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
     lines: list[str] = ["0:00 オープニング"]
     outro_line: str | None = None
+    pending_divider: float | None = None
     for slide, offset in zip(slides, slide_offsets):
-        if slide.kind == "segment":
-            lines.append(f"{_format_chapter_time(offset)} {slide.title}")
-        elif slide.kind == "outro":
-            outro_line = f"{_format_chapter_time(offset)} まとめ"
+        if slide.kind == "divider":
+            # ニュースのチャプターは直前の区切りスライドの頭から始める
+            pending_divider = offset
+        elif slide.kind == "segment":
+            start = pending_divider if pending_divider is not None else offset
+            lines.append(f"{_format_chapter_time(start)} {slide.title}")
+            pending_divider = None
+        elif slide.kind in {"outro", "ranking"}:
+            outro_line = f"{_format_chapter_time(offset)} まとめ（今週の重要度ランキング）"
     if outro_line:
         lines.append(outro_line)
     return "\n".join(lines)
@@ -326,6 +387,165 @@ def _render_thumbnail(
     image.convert("RGB").save(path)
 
 
+def _draw_category_icon(
+    draw: ImageDraw.ImageDraw, x: int, y: int, size: int, icon: str, color: str
+) -> None:
+    """カテゴリチップ内の簡易アイコン。(x, y) は左上、size は正方形の一辺。"""
+    cx = x + size / 2
+    cy = y + size / 2
+    if icon == "shield":
+        draw.polygon(
+            [
+                (cx, y),
+                (x + size, y + size * 0.25),
+                (x + size * 0.85, y + size * 0.75),
+                (cx, y + size),
+                (x + size * 0.15, y + size * 0.75),
+                (x, y + size * 0.25),
+            ],
+            fill=color,
+        )
+    elif icon == "cloud":
+        draw.ellipse((x, cy - size * 0.15, x + size * 0.6, cy + size * 0.45), fill=color)
+        draw.ellipse((x + size * 0.25, y, x + size * 0.85, cy + size * 0.3), fill=color)
+        draw.ellipse((x + size * 0.5, cy - size * 0.2, x + size, cy + size * 0.45), fill=color)
+    elif icon == "chip":
+        pad = size * 0.2
+        draw.rectangle((x + pad, y + pad, x + size - pad, y + size - pad), fill=color)
+        for offset in (size * 0.3, size * 0.5, size * 0.7):
+            draw.line((x + offset, y, x + offset, y + pad), fill=color, width=2)
+            draw.line((x + offset, y + size - pad, x + offset, y + size), fill=color, width=2)
+            draw.line((x, y + offset, x + pad, y + offset), fill=color, width=2)
+            draw.line((x + size - pad, y + offset, x + size, y + offset), fill=color, width=2)
+    elif icon == "wrench":
+        draw.ellipse((x, y, x + size * 0.55, y + size * 0.55), fill=color)
+        draw.ellipse(
+            (x + size * 0.14, y + size * 0.14, x + size * 0.41, y + size * 0.41),
+            fill="#ffffff",
+        )
+        draw.line(
+            (cx - size * 0.05, cy - size * 0.05, x + size, y + size), fill=color, width=int(size * 0.22)
+        )
+    elif icon == "building":
+        draw.rectangle((x + size * 0.15, y, x + size * 0.85, y + size), fill=color)
+        for wy in (0.2, 0.45, 0.7):
+            draw.rectangle(
+                (x + size * 0.3, y + size * wy, x + size * 0.45, y + size * (wy + 0.12)),
+                fill="#ffffff",
+            )
+            draw.rectangle(
+                (x + size * 0.55, y + size * wy, x + size * 0.7, y + size * (wy + 0.12)),
+                fill="#ffffff",
+            )
+    else:  # spark
+        draw.polygon(
+            [
+                (cx, y),
+                (cx + size * 0.18, cy - size * 0.18),
+                (x + size, cy),
+                (cx + size * 0.18, cy + size * 0.18),
+                (cx, y + size),
+                (cx - size * 0.18, cy + size * 0.18),
+                (x, cy),
+                (cx - size * 0.18, cy - size * 0.18),
+            ],
+            fill=color,
+        )
+
+
+def _draw_category_chip(
+    draw: ImageDraw.ImageDraw,
+    right_x: int,
+    y: int,
+    style: CategoryStyle,
+    font: ImageFont.ImageFont,
+) -> None:
+    """カテゴリ名のチップを右端 right_x に合わせて描画する。"""
+    label = style.label
+    bbox = font.getbbox(label)
+    text_w = bbox[2] - bbox[0]
+    icon_size = 26
+    pad_x = 16
+    chip_h = 44
+    chip_w = pad_x + icon_size + 10 + text_w + pad_x
+    x1 = right_x - chip_w
+    draw.rounded_rectangle((x1, y, right_x, y + chip_h), radius=chip_h // 2, fill=style.color)
+    _draw_category_icon(draw, x1 + pad_x, y + (chip_h - icon_size) // 2, icon_size, style.icon, "#ffffff")
+    draw.text((x1 + pad_x + icon_size + 10, y + 7), label, font=font, fill="#ffffff")
+
+
+def _text_width(font: ImageFont.ImageFont, text: str) -> int:
+    bbox = font.getbbox(text or " ")
+    return bbox[2] - bbox[0]
+
+
+def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
+    # 区切りスライドは背景画像を使わず、濃色フルブリードで場面転換を強調する
+    style = category_style(spec.category)
+    image = Image.new("RGB", (WIDTH, HEIGHT), "#111827")
+    draw = ImageDraw.Draw(image)
+
+    draw.rectangle((0, 0, WIDTH, 14), fill=style.color)
+    draw.rectangle((0, HEIGHT - 14, WIDTH, HEIGHT), fill=style.color)
+
+    number_font = _load_font(210, bold=True)
+    title_font = _load_font(64, bold=True)
+    chip_font = _load_font(30, bold=True)
+
+    number_text = f"#{spec.number}"
+    number_w = _text_width(number_font, number_text)
+    draw.text(((WIDTH - number_w) / 2, 240), number_text, font=number_font, fill=style.color)
+
+    lines = _wrap_by_pixels(spec.title, title_font, 1500)[:2]
+    y = 560
+    for line in lines:
+        line_w = _text_width(title_font, line)
+        draw.text(((WIDTH - line_w) / 2, y), line, font=title_font, fill="#ffffff")
+        bbox = title_font.getbbox(line or " ")
+        y += bbox[3] - bbox[1] + 18
+
+    chip_label_w = _text_width(chip_font, style.label)
+    chip_w = 16 + 26 + 10 + chip_label_w + 16
+    _draw_category_chip(draw, int((WIDTH + chip_w) / 2), y + 40, style, chip_font)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+
+
+def _render_visual_panel(
+    draw: ImageDraw.ImageDraw, visual: SegmentVisual, accent: str
+) -> None:
+    """セグメントスライドの図解パネル(y=495〜640)。flow=3ステップ図 / command=コード風。"""
+    top, bottom = 495, 640
+    if visual.type == "flow":
+        box_w = 480
+        gap = 70
+        box_font = _load_font(30, bold=True)
+        arrow_font = _load_font(44, bold=True)
+        for i, step in enumerate(visual.items[:3]):
+            x1 = 140 + i * (box_w + gap)
+            draw.rounded_rectangle(
+                (x1, top + 10, x1 + box_w, bottom - 10),
+                radius=12,
+                fill="#f8fafc",
+                outline=accent,
+                width=3,
+            )
+            _draw_wrapped(
+                draw, (x1 + 20, top + 40), step, box_font, "#1f2937", box_w - 40, 10, max_lines=2
+            )
+            if i < 2:
+                arrow_x = x1 + box_w + 14
+                draw.text((arrow_x, (top + bottom) / 2 - 30), "→", font=arrow_font, fill=accent)
+    else:  # command
+        mono_font = _load_mono_font(28)
+        draw.rounded_rectangle((140, top, 1720, bottom), radius=12, fill="#0f172a")
+        y = top + 20
+        for line in visual.items[:3]:
+            draw.text((172, y), line, font=mono_font, fill="#e2e8f0")
+            y += 40
+
+
 def _render_slide(
     spec: SlideSpec,
     index: int,
@@ -333,6 +553,10 @@ def _render_slide(
     path: Path,
     background: Image.Image | None = None,
 ) -> None:
+    if spec.kind == "divider":
+        _render_divider_slide(spec, path)
+        return
+
     if background is not None:
         # 生成背景の上に白の半透明パネルを敷き、テキストの可読性を背景に依存させない
         base = _cover_crop(background, WIDTH, HEIGHT).convert("RGBA")
@@ -364,23 +588,95 @@ def _render_slide(
     badge_font = _load_font(30, bold=True)
     label_font = _load_font(24, bold=True)
     box_font = _load_font(32)
+    chip_font = _load_font(30, bold=True)
 
     draw.rectangle((0, 0, WIDTH, 120), fill="#111827")
     draw.text((80, 40), "AI News Studio", font=badge_font, fill="#ffffff")
     draw.text((WIDTH - 260, 44), f"{index}/{total}", font=meta_font, fill="#d1d5db")
 
-    if spec.kind in {"cover", "intro", "outro"}:
+    if spec.kind == "segment" and spec.category:
+        accent = category_style(spec.category).color
+        # カテゴリチップをヘッダー内(ページ番号の左)に表示する
+        _draw_category_chip(draw, WIDTH - 320, 38, category_style(spec.category), chip_font)
+    elif spec.kind in {"cover", "intro", "outro", "opening", "ranking"}:
         accent = "#2563eb"
     elif spec.kind == "hook":
         accent = "#dc2626"
     else:
         accent = "#f59e0b"
     draw.rectangle((80, 180, 96, 810), fill=accent)
-    _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
 
-    if spec.kind == "segment":
-        # For segment slides: reduced body text, then Impact/Action boxes
-        _draw_wrapped(draw, (140, 490), spec.body, body_font, "#374151", 1580, 18, max_lines=2)
+    if spec.kind == "hook":
+        # 冒頭0〜5秒: ラベル + 大きな一言のみ(読ませない、聞かせる)
+        hook_label_font = _load_font(36, bold=True)
+        hook_body_font = _load_font(64, bold=True)
+        draw.text((140, 200), "今週の注目ニュース", font=hook_label_font, fill=accent)
+        _draw_wrapped(draw, (140, 320), spec.body, hook_body_font, "#111827", 1580, 24, max_lines=3)
+    elif spec.kind == "opening":
+        # 5〜20秒: 価値提示 + ラインナップ一覧
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=1)
+        _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), "#4b5563", 1580, 12, max_lines=1)
+        entry_font = _load_font(36, bold=True)
+        num_font = _load_font(26, bold=True)
+        y = 350
+        shown = spec.entries[:7]
+        for entry in shown:
+            style = category_style(entry.category)
+            draw.rounded_rectangle((140, y, 216, y + 44), radius=10, fill=style.color)
+            num_text = f"#{entry.number}"
+            draw.text(
+                (140 + (76 - _text_width(num_font, num_text)) / 2, y + 8),
+                num_text,
+                font=num_font,
+                fill="#ffffff",
+            )
+            _draw_wrapped(draw, (240, y + 2), entry.label, entry_font, "#1f2937", 1440, 0, max_lines=1)
+            y += 62
+        if len(spec.entries) > len(shown):
+            draw.text(
+                (240, y + 2),
+                f"…ほか {len(spec.entries) - len(shown)} 本",
+                font=_load_font(32),
+                fill="#6b7280",
+            )
+    elif spec.kind == "ranking":
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=1)
+        medal_colors = ["#eab308", "#9ca3af", "#b45309"]
+        rank_font = _load_font(40, bold=True)
+        rank_num_font = _load_font(34, bold=True)
+        y = 310
+        for i, entry in enumerate(spec.entries[:3]):
+            color = medal_colors[i]
+            cx, cy = 178, y + 38
+            draw.ellipse((cx - 36, cy - 36, cx + 36, cy + 36), fill=color)
+            rank_text = f"{i + 1}"
+            draw.text(
+                (cx - _text_width(rank_num_font, rank_text) / 2, cy - 24),
+                rank_text,
+                font=rank_num_font,
+                fill="#ffffff",
+            )
+            _draw_wrapped(draw, (250, y + 10), f"{entry.label}", rank_font, "#111827", 1450, 0, max_lines=1)
+            y += 110
+        rest = spec.entries[3:7]
+        rest_font = _load_font(30)
+        y = 636
+        for entry in rest:
+            draw.text((160, y), f"{entry.number}位  {entry.label}", font=rest_font, fill="#4b5563")
+            y += 44
+        if len(spec.entries) > 7:
+            draw.text((160, y), f"…ほか {len(spec.entries) - 7} 本", font=rest_font, fill="#6b7280")
+    elif spec.kind == "segment":
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=2)
+        # 元の見出し(英語など)は事実の原典として小さく併記する
+        sub_y = 366
+        if spec.headline and spec.headline not in spec.title:
+            _draw_wrapped(draw, (140, sub_y), spec.headline, meta_font, "#6b7280", 1580, 0, max_lines=1)
+        body_max_lines = 1 if spec.visual else 2
+        _draw_wrapped(draw, (140, 415), spec.body, body_font, "#374151", 1580, 18, max_lines=body_max_lines)
+
+        if spec.visual:
+            _render_visual_panel(draw, spec.visual, accent)
 
         # Impact and Action boxes
         box_y_start = 650
@@ -396,7 +692,7 @@ def _render_slide(
             (box_x_left, box_y_start, box_x_left + box_width, box_y_start + box_height),
             radius=12, fill=impact_bg, outline="#f59e0b", width=2
         )
-        draw.text((box_x_left + 16, box_y_start + 12), "Impact:", font=label_font, fill=impact_label_color)
+        draw.text((box_x_left + 16, box_y_start + 12), "何が変わるか", font=label_font, fill=impact_label_color)
         _draw_wrapped(draw, (box_x_left + 16, box_y_start + 50), spec.impact, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
 
         # Action box
@@ -406,9 +702,10 @@ def _render_slide(
             (box_x_right, box_y_start, box_x_right + box_width, box_y_start + box_height),
             radius=12, fill=action_bg, outline="#3b82f6", width=2
         )
-        draw.text((box_x_right + 16, box_y_start + 12), "Action:", font=label_font, fill=action_label_color)
+        draw.text((box_x_right + 16, box_y_start + 12), "次にやること", font=label_font, fill=action_label_color)
         _draw_wrapped(draw, (box_x_right + 16, box_y_start + 50), spec.action, box_font, "#1f2937", box_width - 32, 12, max_lines=2)
     else:
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
         _draw_wrapped(draw, (140, 490), spec.body, body_font, "#374151", 1580, 18, max_lines=4)
 
     # Keep everything above y=860; the area below is reserved for burned-in subtitles
@@ -468,7 +765,7 @@ def _wav_duration(path: Path) -> float:
         return wav.getnframes() / float(wav.getframerate())
 
 
-def _run_ffmpeg(args: list[str], cwd: Path | None = None) -> None:
+def _run_ffmpeg(args: list[str], cwd: Path | None = None) -> str:
     result = subprocess.run(
         ["ffmpeg", "-y", *args],
         cwd=str(cwd) if cwd else None,
@@ -479,6 +776,68 @@ def _run_ffmpeg(args: list[str], cwd: Path | None = None) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-2000:] or "ffmpeg failed")
+    return result.stderr
+
+
+def _loudnorm_target() -> str:
+    return f"loudnorm=I={LOUDNESS_I:g}:TP={LOUDNESS_TP:g}:LRA={LOUDNESS_LRA:g}"
+
+
+def _normalize_final_loudness(work_dir: Path, video_name: str) -> None:
+    """concat後の動画全体を2パスloudnormで -16 LUFS / TP -1.5 dBTP に揃える。
+
+    音声のみ再エンコード(-c:v copy)なので安価。計測や適用に失敗した場合は
+    パート単位の正規化済み音声のまま(目標値に近い)とし、動画生成は落とさない。
+    """
+    try:
+        stderr = _run_ffmpeg(
+            [
+                "-i",
+                video_name,
+                "-af",
+                f"{_loudnorm_target()}:print_format=json",
+                "-f",
+                "null",
+                "-",
+            ],
+            cwd=work_dir,
+        )
+        start = stderr.rfind("{")
+        end = stderr.rfind("}")
+        if start < 0 or end <= start:
+            return
+        measured = json.loads(stderr[start : end + 1])
+        af = (
+            f"{_loudnorm_target()}"
+            f":measured_I={measured['input_i']}"
+            f":measured_TP={measured['input_tp']}"
+            f":measured_LRA={measured['input_lra']}"
+            f":measured_thresh={measured['input_thresh']}"
+            f":offset={measured['target_offset']}"
+            f":linear=true"
+        )
+        normalized_name = "video_normalized.mp4"
+        _run_ffmpeg(
+            [
+                "-i",
+                video_name,
+                "-c:v",
+                "copy",
+                "-af",
+                af,
+                "-ar",
+                "48000",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                normalized_name,
+            ],
+            cwd=work_dir,
+        )
+        (work_dir / normalized_name).replace(work_dir / video_name)
+    except Exception:
+        return
 
 
 def _format_srt_time(seconds: float) -> str:
@@ -587,33 +946,67 @@ def _save_theme_assets(theme: ThemeImages, assets_dir: Path) -> None:
 
 
 def _build_slides(draft: VideoPlanDraft) -> list[SlideSpec]:
+    entries = [
+        SlideEntry(
+            number=segment.number,
+            label=segment.title_ja or segment.headline,
+            category=segment.category,
+        )
+        for segment in draft.segments
+    ]
+
     slides: list[SlideSpec] = []
+    # 冒頭は20秒以内: フック(〜5秒) + オープニング(〜15秒)の2枚のみ。
+    # 旧構成の cover(タイトル読み上げ)と intro は廃止し、ラインナップ一覧に統合した。
     if draft.hook:
         slides.append(
             SlideSpec(kind="hook", title="今週の注目", body=draft.hook, narration=draft.hook)
         )
-    slides.extend([
+    slides.append(
         SlideSpec(
-            kind="cover",
-            title=draft.title,
-            body=draft.thumbnail_text.replace("\n", " / "),
-            narration=draft.title,
-        ),
-        SlideSpec(kind="intro", title="今週のハイライト", body=draft.intro, narration=draft.intro),
-    ])
+            kind="opening",
+            title="今週のAIニュースラインナップ",
+            body=f"{draft.week_label}｜重要ニュース{len(draft.segments)}本を短時間でキャッチアップ",
+            narration=draft.intro,
+            entries=entries,
+        )
+    )
     for segment in draft.segments:
+        label = segment.title_ja or segment.headline
+        slides.append(
+            SlideSpec(
+                kind="divider",
+                title=label,
+                body="",
+                narration="",
+                number=segment.number,
+                category=segment.category,
+            )
+        )
         slides.append(
             SlideSpec(
                 kind="segment",
-                title=f"#{segment.number} {segment.headline}",
+                title=f"#{segment.number} {label}",
                 body=segment.summary,
                 narration=segment.narration,
                 source=segment.source,
                 impact=segment.impact,
                 action=segment.action,
+                number=segment.number,
+                category=segment.category,
+                headline=segment.headline,
+                visual=segment.visual,
             )
         )
-    slides.append(SlideSpec(kind="outro", title="まとめ", body=draft.outro, narration=draft.outro))
+    slides.append(
+        SlideSpec(
+            kind="ranking",
+            title="今週の重要度ランキング",
+            body="",
+            narration=draft.outro,
+            entries=entries,
+        )
+    )
     return slides
 
 
@@ -634,10 +1027,13 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     _render_thumbnail(draft, work_dir / "thumbnail.png", theme.thumbnail_bg)
 
     slides = _build_slides(draft)
-    reading_map = await build_reading_map([slide.narration for slide in slides])
+    reading_map = await build_reading_map(
+        [slide.narration for slide in slides if slide.narration]
+    )
     padded_durations: list[float] = []
     all_chunk_durations: list[list[tuple[str, float]]] = []
     font_name = _subtitle_font()
+    voice_wav_params: tuple[int, int, int] | None = None
 
     for index, slide in enumerate(slides, 1):
         slide_path = slides_dir / f"slide_{index:03}.png"
@@ -646,54 +1042,78 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         part_srt_path = work_dir / part_srt_rel
 
         _render_slide(slide, index, len(slides), slide_path, theme.slide_bg)
-        chunk_durations = await _synthesize_voice(slide.narration, audio_path, reading_map)
 
-        audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)
-        part_duration = audio_duration + 0.4
+        if slide.kind == "divider":
+            # 区切りは無音・固定尺・字幕なし。WAVパラメータはVOICEVOX出力に揃える
+            params = voice_wav_params or (1, 2, 24000)
+            _write_silent_wav(audio_path, DIVIDER_DURATION, *params)
+            chunk_durations = []
+            part_duration = DIVIDER_DURATION
+            fade_duration = 0.3
+        else:
+            chunk_durations = await _synthesize_voice(slide.narration, audio_path, reading_map)
+            if voice_wav_params is None:
+                voice_wav_params = _wav_params(audio_path)
+            audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)
+            part_duration = audio_duration + 0.4
+            fade_duration = 0.4
+
         padded_durations.append(part_duration)
         all_chunk_durations.append(chunk_durations)
 
-        _write_part_srt(chunk_durations, part_srt_path)
+        fade_out_start = part_duration - fade_duration
+        vf_filters = ["setsar=1,fps=30"]
+        if chunk_durations:
+            _write_part_srt(chunk_durations, part_srt_path)
+            vf_filters.append(
+                f"subtitles={part_srt_rel}"
+                f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
+                f",BackColour=&H60000000,MarginV=18,MarginL=30,MarginR=30'"
+            )
+        vf_filters.append(f"fade=t=in:st=0:d={fade_duration}")
+        vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")
+        vf = ",".join(vf_filters)
 
-        fade_out_start = part_duration - 0.4
-        vf = (
-            f"setsar=1,fps=30"
-            f",subtitles={part_srt_rel}"
-            f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
-            f",BackColour=&H60000000,MarginV=18,MarginL=30,MarginR=30'"
-            f",fade=t=in:st=0:d=0.4"
-            f",fade=t=out:st={fade_out_start:.3f}:d=0.4"
-        )
-        _run_ffmpeg(
-            [
-                "-loop",
-                "1",
-                "-i",
-                f"slides/slide_{index:03}.png",
-                "-i",
-                f"audio/audio_{index:03}.wav",
-                "-vf",
-                vf,
+        args = [
+            "-loop",
+            "1",
+            "-i",
+            f"slides/slide_{index:03}.png",
+            "-i",
+            f"audio/audio_{index:03}.wav",
+            "-vf",
+            vf,
+        ]
+        if slide.kind != "divider":
+            # 無音区切りへの loudnorm は不安定なため音声付きパートのみ正規化する
+            args += [
                 "-af",
-                "apad=pad_dur=0.4,loudnorm=I=-14:TP=-1.5:LRA=11",
-                "-t",
-                f"{part_duration:.3f}",
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-pix_fmt",
-                "yuv420p",
-                "-crf",
-                "18",
-                "-preset",
-                "medium",
-                f"parts/part_{index:03}.mp4",
-            ],
-            cwd=work_dir,
-        )
+                f"apad=pad_dur=0.4,loudnorm=I={LOUDNESS_I:g}:TP={LOUDNESS_TP:g}:LRA={LOUDNESS_LRA:g}",
+            ]
+        args += [
+            "-t",
+            f"{part_duration:.3f}",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            # loudnorm の内部リサンプリング有無に関わらず全パートのAAC条件を揃え、
+            # concat -c copy を成立させるため出力サンプルレート/チャンネルを固定する
+            "-ar",
+            "48000",
+            "-ac",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "18",
+            "-preset",
+            "medium",
+            f"parts/part_{index:03}.mp4",
+        ]
+        _run_ffmpeg(args, cwd=work_dir)
 
     concat_file = work_dir / "concat.txt"
     concat_file.write_text(
@@ -715,6 +1135,9 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         ],
         cwd=work_dir,
     )
+
+    # YouTube向けラウドネス(-16 LUFS / TP -1.5 dBTP)を動画全体で保証する
+    _normalize_final_loudness(work_dir, "video.mp4")
 
     slide_offsets: list[float] = []
     cursor = 0.0
@@ -756,6 +1179,8 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         thumbnail_path="thumbnail.png",
         chapters=chapters,
         youtube_description=youtube_description,
+        title_candidates=draft.title_candidates,
+        thumbnail_text_candidates=draft.thumbnail_text_candidates,
     )
     (work_dir / "metadata.json").write_text(
         artifact.model_dump_json(indent=2), encoding="utf-8"

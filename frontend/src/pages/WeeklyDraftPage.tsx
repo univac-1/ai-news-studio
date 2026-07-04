@@ -60,7 +60,7 @@ function SegmentAccordion({ segment }: { segment: VideoSegment }) {
         onClick={() => setOpen(v => !v)}
       >
         <span className="text-sm font-medium line-clamp-1">
-          #{segment.number} {segment.headline}
+          #{segment.number} {segment.title_ja || segment.headline}
         </span>
         {open ? (
           <ChevronUp className="w-4 h-4 shrink-0 text-muted-foreground" />
@@ -217,11 +217,35 @@ export function WeeklyDraftPage() {
               )
             })()}
 
-            <DraftSection title="サムネイル文言" copyText={draft.thumbnail_text}>
-              <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                {draft.thumbnail_text}
-              </pre>
-            </DraftSection>
+            {(() => {
+              const candidates = draft.thumbnail_text_candidates ?? []
+              const hasThumbCandidates = candidates.length >= 2
+              return (
+                <DraftSection
+                  title="サムネイル文言案"
+                  copyText={hasThumbCandidates ? candidates.join('\n\n---\n\n') : draft.thumbnail_text}
+                >
+                  {hasThumbCandidates ? (
+                    <div className="space-y-2">
+                      {candidates.map((candidate, i) => (
+                        <pre
+                          key={i}
+                          className={`text-sm leading-relaxed whitespace-pre-wrap font-sans rounded-lg border px-3 py-2 ${
+                            i === 0 ? 'font-bold bg-muted/30' : ''
+                          }`}
+                        >
+                          {candidate}
+                        </pre>
+                      ))}
+                    </div>
+                  ) : (
+                    <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
+                      {draft.thumbnail_text}
+                    </pre>
+                  )}
+                </DraftSection>
+              )
+            })()}
 
             <Card>
               <CardHeader className="pb-2 pt-4 px-4">

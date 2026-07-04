@@ -5,7 +5,29 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 
 from ..core.config import settings
-from ..schemas.draft import VideoPlanDraft
+from ..schemas.draft import SegmentVisual, VideoPlanDraft
+from .categorize import category_style
+from .generate_weekly_video_plan import (
+    HOOK_MAX_CHARS,
+    OPENING_MAX_CHARS,
+    TITLE_JA_MAX_CHARS,
+)
+
+
+def _parse_visual(raw: object) -> SegmentVisual | None:
+    # Gemini出力のvisualは厳格に検証し、少しでも不正なら黙って捨てる(通常レイアウトで描画)
+    if not isinstance(raw, dict):
+        return None
+    visual_type = raw.get("type")
+    items = raw.get("items")
+    if visual_type not in ("flow", "command") or not isinstance(items, list):
+        return None
+    cleaned = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+    if visual_type == "flow" and len(cleaned) != 3:
+        return None
+    if visual_type == "command" and not (1 <= len(cleaned) <= 3):
+        return None
+    return SegmentVisual(type=visual_type, items=cleaned)
 
 
 async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
@@ -16,36 +38,55 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
         vertexai.init(project=settings.GEMINI_PROJECT, location=settings.GEMINI_LOCATION)
         model = GenerativeModel("gemini-2.5-flash")
 
-        segments_text = "\n".join(
-            f"見出し: {seg.headline}\nナレーション: {seg.narration}"
+        segments_text = "\n\n".join(
+            f"### セグメント{seg.number}\n"
+            f"見出し: {seg.headline}\n"
+            f"カテゴリ: {category_style(seg.category).label}\n"
+            f"要約: {seg.summary}\n"
+            f"インパクト: {seg.impact}\n"
+            f"アクション: {seg.action}\n"
+            f"ナレーション: {seg.narration}"
             for seg in draft.segments
         )
 
         prompt = (
-            f"以下のYouTube動画ドラフトのナレーション原稿を、自然な話し言葉に書き換えてください。\n\n"
+            f"以下のYouTube AIニュース動画ドラフトを、視聴維持率が上がる構成に書き換えてください。\n"
+            f"視聴者はビジネスパーソン・開発者。信頼感を保ち、煽りすぎないこと。\n\n"
             f"動画タイトル: {draft.title}\n\n"
-            f"【イントロ】\n{draft.intro}\n\n"
+            f"【現在のフック】\n{draft.hook}\n\n"
+            f"【現在のオープニング】\n{draft.intro}\n\n"
             f"【セグメント一覧】\n{segments_text}\n\n"
-            f"【アウトロ】\n{draft.outro}\n\n"
-            "書き換えの指示:\n"
-            "- intro・各セグメントのnarration・outroをYouTubeニュース動画向けの自然な話し言葉に書き換える\n"
-            "- 「インパクト:」「あなたへのアクション:」のようなラベルの読み上げをやめ、内容を文章に織り込む\n"
-            "- セグメント間に自然なつなぎ（「続いては〜」など）を入れる\n"
-            "- 事実・固有名詞・数値は変えない。要約の内容（インパクト・アクションの情報）は削らず盛り込む\n"
-            "- 音声合成で読み上げるため、記号・URL・英語の羅列を避け、読みやすい日本語にする\n\n"
-            "加えて、以下3つも生成してください:\n"
-            "- hook: 動画の一番最初に流す10〜15秒のフック原稿。最もインパクトの大きいニュースを1つ選び、"
-            "視聴者が「見ないと損」と感じる形でティザーする。煽りすぎない・事実は変えない。"
-            "最後は「今週も重要ニュースをまとめてお届けします」のように本編へつなぐ。\n"
-            "- title_candidates: YouTubeのタイトル案を3つ。最重要ニュースの具体的な内容を軸に、"
+            f"【現在のまとめ】\n{draft.outro}\n\n"
+            "音声合成(VOICEVOX、約8〜9文字/秒)で読み上げるため、文字数指定は厳守してください。\n\n"
+            "生成する項目:\n"
+            f"1. hook: 動画冒頭0〜5秒。今週最大のニュースを一言で提示。{HOOK_MAX_CHARS}文字以内。\n"
+            f"2. intro: 5〜20秒のオープニング原稿。前半で「この動画を見る価値(何本を何分で把握できるか)」を提示し、"
+            f"後半は「ラインナップは画面のとおりです。それでは1本目からいきましょう」のように"
+            f"テンポよく本編へつなぐ。{OPENING_MAX_CHARS}文字以内。ニュースタイトルの列挙はしない(画面に一覧が出る)。\n"
+            "3. narrations: 各セグメントのナレーション。自然な話し言葉に書き換え、"
+            "「インパクト:」「アクション:」のようなラベル読み上げをやめて内容を文章に織り込む。"
+            "「つまり何が重要か」「誰に影響するか」「視聴者が次に何をすべきか」が明確に伝わる構成にする。"
+            "セグメント間のつなぎ(「続いては〜」など)を入れる。事実・固有名詞・数値は変えない。\n"
+            "4. segments_meta: 各セグメントについて次の2つ。\n"
+            f"   - title_ja: スライド表示用の短い日本語タイトル。{TITLE_JA_MAX_CHARS}文字以内。"
+            "英語見出しは意味を保って日本語化する。誇張・事実改変は禁止。\n"
+            "   - visual: 画面を補足する図解データ。該当する場合のみ。\n"
+            '     セキュリティ系: {"type":"flow","items":["攻撃の起点","経路・手口","影響・被害"]} の3ステップ(各12文字以内)。\n'
+            '     開発ツール系: {"type":"command","items":["コマンド例や利用イメージ(各40文字以内、最大3行)"]}。\n'
+            "     どちらにも該当しない場合は null。無理に作らない。\n"
+            "5. outro: まとめ原稿。「今週の重要度ランキング」として第1位〜第3位(セグメント1〜3がそのまま順位)を"
+            "振り返り、最後にチャンネル登録・通知オンを促す。200文字以内。\n"
+            "6. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
-            "釣りタイトル（内容と乖離した誇張）は禁止。"
-            "例: 「OpenAIがついに○○を発表、開発者の仕事はこう変わる【今週のAIニュース7選】」\n"
-            "- thumbnail_text: サムネイル用の文言。1行目=最大8文字程度のパワーワード（例「GPT-5来た」）、"
-            "2行目・3行目=補足（各12文字以内）。改行区切りで最大3行。\n\n"
-            f'出力はJSONのみ: {{"intro": "...", "narrations": ["...", ...], "outro": "...", '
-            f'"hook": "...", "title_candidates": ["...", "...", "..."], "thumbnail_text": "..."}}\n'
-            f"narrationsはセグメントと同数・同順（{len(draft.segments)}件）で返してください。\n"
+            "釣りタイトル(内容と乖離した誇張)は禁止。\n"
+            "7. thumbnail_text_candidates: サムネイル文言案を5つ。各案は改行区切りで最大3行、"
+            "1行目=最大8文字程度のパワーワード、2〜3行目=補足(各12文字以内)。\n\n"
+            "出力はJSONのみ:\n"
+            '{"hook": "...", "intro": "...", "narrations": ["...", ...], '
+            '"segments_meta": [{"title_ja": "...", "visual": {"type": "flow", "items": ["...", "...", "..."]}}, ...], '
+            '"outro": "...", "title_candidates": ["...", "...", "...", "...", "..."], '
+            '"thumbnail_text_candidates": ["...", "...", "...", "...", "..."]}\n'
+            f"narrationsとsegments_metaはセグメントと同数・同順({len(draft.segments)}件)で返してください。\n"
             "説明は不要です。JSONのみ返してください。"
         )
 
@@ -65,15 +106,36 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
         new_intro: str = result["intro"]
         new_outro: str = result["outro"]
 
-        new_segments = [
-            seg.model_copy(update={"narration": narrations[i]})
-            for i, seg in enumerate(draft.segments)
-        ]
+        # segments_meta はフィールド単位で defensive に採用する
+        raw_meta = result.get("segments_meta")
+        meta_list = (
+            raw_meta
+            if isinstance(raw_meta, list) and len(raw_meta) == len(draft.segments)
+            else [{} for _ in draft.segments]
+        )
 
-        narration_script = f"【イントロ】\n{new_intro}\n\n"
-        for seg in new_segments:
-            narration_script += f"{seg.narration}\n\n"
-        narration_script += f"【アウトロ】\n{new_outro}"
+        new_segments = []
+        for i, seg in enumerate(draft.segments):
+            meta = meta_list[i] if isinstance(meta_list[i], dict) else {}
+            raw_title_ja = meta.get("title_ja")
+            title_ja = (
+                raw_title_ja.strip()
+                if isinstance(raw_title_ja, str)
+                and raw_title_ja.strip()
+                and len(raw_title_ja.strip()) <= TITLE_JA_MAX_CHARS + 4
+                else seg.title_ja
+            )
+            visual = _parse_visual(meta.get("visual"))
+            new_segments.append(
+                seg.model_copy(
+                    update={
+                        "narration": narrations[i],
+                        "title_ja": title_ja,
+                        "slide_title": f"#{seg.number} {title_ja}" if title_ja else seg.slide_title,
+                        "visual": visual,
+                    }
+                )
+            )
 
         # Defensively adopt hook, title_candidates, thumbnail_text from Gemini output.
         # Each field is only updated when Gemini returns a valid, non-empty value.
@@ -92,12 +154,22 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             new_title_candidates = draft.title_candidates
             new_title = draft.title
 
-        raw_thumbnail = result.get("thumbnail_text")
-        new_thumbnail_text = (
-            raw_thumbnail
-            if isinstance(raw_thumbnail, str) and raw_thumbnail.strip()
-            else draft.thumbnail_text
-        )
+        raw_thumb_candidates = result.get("thumbnail_text_candidates")
+        if (
+            isinstance(raw_thumb_candidates, list)
+            and len(raw_thumb_candidates) >= 1
+            and all(isinstance(c, str) and c.strip() for c in raw_thumb_candidates)
+        ):
+            new_thumbnail_candidates = raw_thumb_candidates
+            new_thumbnail_text = raw_thumb_candidates[0]
+        else:
+            new_thumbnail_candidates = draft.thumbnail_text_candidates
+            new_thumbnail_text = draft.thumbnail_text
+
+        narration_script = f"【フック】\n{new_hook}\n\n【オープニング】\n{new_intro}\n\n"
+        for seg in new_segments:
+            narration_script += f"{seg.narration}\n\n"
+        narration_script += f"【まとめ】\n{new_outro}"
 
         return draft.model_copy(
             update={
@@ -109,6 +181,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
                 "narration_script": narration_script,
                 "hook": new_hook,
                 "thumbnail_text": new_thumbnail_text,
+                "thumbnail_text_candidates": new_thumbnail_candidates,
             }
         )
 

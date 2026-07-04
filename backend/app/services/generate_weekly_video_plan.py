@@ -2,6 +2,12 @@ from datetime import datetime, timezone
 
 from ..schemas.draft import VideoPlanDraft, VideoSegment
 from ..schemas.news import NewsItem
+from .categorize import categorize_news
+
+# VOICEVOX speed 1.1 で約8〜9文字/秒。冒頭20秒に収めるための文字数バジェット
+HOOK_MAX_CHARS = 45
+OPENING_MAX_CHARS = 110
+TITLE_JA_MAX_CHARS = 16
 
 
 def _week_range_label(items: list[NewsItem]) -> str:
@@ -17,6 +23,21 @@ def _week_range_label(items: list[NewsItem]) -> str:
         return ""
     lo, hi = min(dts), max(dts)
     return f"{lo.month}月{lo.day}日〜{hi.month}月{hi.day}日"
+
+
+def fallback_title_ja(item: NewsItem) -> str:
+    """スマホでも読める短い日本語タイトルのフォールバック。
+
+    Gemini が使えない場合に使う。モデル名が分かればそれを軸に、
+    なければ元タイトルの先頭を切り出す（事実の改変はしない）。
+    """
+    model_name = item.model_name if item.model_name not in ("Unknown", "") else ""
+    if model_name and len(model_name) <= TITLE_JA_MAX_CHARS:
+        return model_name
+    title = item.title.strip()
+    if len(title) <= TITLE_JA_MAX_CHARS:
+        return title
+    return title[: TITLE_JA_MAX_CHARS - 1] + "…"
 
 
 def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
@@ -40,24 +61,20 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
         title = f"今週のAIニュース速報（{week_label}）— 重要AI動向まとめ"
         thumbnail_text = f"今週のAI速報\n重要{len(items)}本まとめ"
 
+    # オープニング(5〜20秒想定)。価値提示→ラインナップ提示→本編へ。110字以内。
     intro = (
-        f"今週は重要度Aのニュースが {len(items)} 件ありました。"
-        + (f"{providers_str} を中心に、" if providers_str else "")
-        + "AI業界の最新動向を一気にお届けします。"
+        f"この動画では、今週の重要AIニュース{len(items)}本を短時間でまとめて把握できます。"
+        "ラインナップはご覧のとおりです。それでは1本目からいきましょう。"
     )
 
     segments: list[VideoSegment] = []
     for i, item in enumerate(items, 1):
-        model_prefix = (
-            f"[{item.model_name}] "
-            if item.model_name and item.model_name not in ("Unknown", "")
-            else ""
-        )
+        title_ja = fallback_title_ja(item)
         narration = (
-            f"#{i}: {item.title}。\n"
+            f"{i}本目は、{item.title}。\n"
             f"{item.summary}\n"
-            f"インパクト: {item.impact}\n"
-            f"あなたへのアクション: {item.action}"
+            f"ポイントは、{item.impact}\n"
+            f"次のアクションとしては、{item.action}"
         )
         segments.append(
             VideoSegment(
@@ -66,35 +83,54 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
                 summary=item.summary,
                 impact=item.impact,
                 action=item.action,
-                slide_title=f"#{i} {model_prefix}{item.title}",
+                slide_title=f"#{i} {title_ja}",
                 narration=narration,
                 source=item.source,
+                title_ja=title_ja,
+                category=categorize_news(item),
             )
         )
 
+    # まとめは重要度ランキング形式(順位=選定順)
+    top3 = segments[:3]
+    ranking_lines = "。".join(
+        f"第{seg.number}位は、{seg.title_ja}" for seg in top3
+    )
     outro = (
-        "以上、今週のAI重要ニュースをお届けしました。"
+        f"今週の重要度ランキングです。{ranking_lines}。"
+        "気になるニュースはチャプターから見返してください。"
         "来週も最新情報をまとめてお届けしますので、チャンネル登録・通知オンをお忘れなく！"
     )
 
+    # フック(0〜5秒想定)。45字以内で今週最大のニュースを一言。
+    hook = (
+        f"{segments[0].title_ja}。今週最大のAIニュースです。"
+        if segments
+        else ""
+    )
+
     slide_outline = [
-        f"[表紙] {title}",
-        "[イントロ] 今週のハイライト",
-        *[s.slide_title for s in segments],
-        "[アウトロ] チャンネル登録・来週の予告",
+        "[フック] 今週最大のニュースを一言",
+        "[オープニング] 動画の価値 + ラインナップ一覧",
+        *[f"{s.slide_title}（番号付き区切り→本編）" for s in segments],
+        "[まとめ] 今週の重要度ランキング + チャンネル登録",
     ]
 
-    narration_script = f"【イントロ】\n{intro}\n\n"
+    narration_script = f"【フック】\n{hook}\n\n【オープニング】\n{intro}\n\n"
     for seg in segments:
         narration_script += f"{seg.narration}\n\n"
-    narration_script += f"【アウトロ】\n{outro}"
+    narration_script += f"【まとめ】\n{outro}"
 
-    news_list_str = "\n".join(
-        f"・{item.title}（{item.source}）" for item in items
-    )
+    news_list_lines: list[str] = []
+    for seg, item in zip(segments, items):
+        if seg.title_ja and seg.title_ja.rstrip("…") not in item.title:
+            news_list_lines.append(f"・{seg.title_ja}｜{item.title}（{item.source}）")
+        else:
+            news_list_lines.append(f"・{item.title}（{item.source}）")
+    news_list_str = "\n".join(news_list_lines)
     description = (
         f"【今週のAIニュース速報 {week_label}】\n\n"
-        f"{intro}\n\n"
+        f"今週の重要AIニュース{len(items)}本を短時間でまとめて把握できます。\n\n"
         f"▼ 今週取り上げたニュース\n{news_list_str}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📌 チャンネル登録・通知オンで最新情報をキャッチ！\n"
@@ -115,19 +151,12 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
 
     reference_urls = [item.url for item in items if item.url]
 
-    hook = (
-        f"{items[0].title}。"
-        "このニュースが今週最大の注目です。"
-        "詳しくは本編で解説しますが、まずは今週の全体像からお届けします。"
-        if items
-        else ""
-    )
-
     return VideoPlanDraft(
         title=title,
         title_candidates=[title],
         week_label=week_label,
         thumbnail_text=thumbnail_text,
+        thumbnail_text_candidates=[thumbnail_text],
         hook=hook,
         intro=intro,
         segments=segments,
