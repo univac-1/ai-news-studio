@@ -39,21 +39,19 @@ class ThemeImages:
     slide_bg: Image.Image | None = None
 
 
-def _cache_path(prompt: str) -> Path:
-    digest = hashlib.sha256(
-        f"{settings.IMAGE_GEN_MODEL}\n{prompt}".encode("utf-8")
-    ).hexdigest()[:16]
+def _cache_path(model: str, prompt: str) -> Path:
+    digest = hashlib.sha256(f"{model}\n{prompt}".encode("utf-8")).hexdigest()[:16]
     return CACHE_DIR / f"{digest}.png"
 
 
-def _generate_image_sync(prompt: str) -> Image.Image | None:
+def _generate_image_sync(model: str, prompt: str) -> Image.Image | None:
     client = genai.Client(
         vertexai=True,
         project=settings.GEMINI_PROJECT,
         location=settings.IMAGE_GEN_LOCATION,
     )
     response = client.models.generate_content(
-        model=settings.IMAGE_GEN_MODEL,
+        model=model,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_modalities=["TEXT", "IMAGE"],
@@ -69,15 +67,15 @@ def _generate_image_sync(prompt: str) -> Image.Image | None:
     return None
 
 
-async def _fetch_image(prompt: str) -> Image.Image | None:
-    cache_path = _cache_path(prompt)
+async def _fetch_image(model: str, prompt: str) -> Image.Image | None:
+    cache_path = _cache_path(model, prompt)
     if cache_path.exists():
         try:
             return Image.open(cache_path).convert("RGB")
         except Exception:
             pass
     try:
-        image = await asyncio.to_thread(_generate_image_sync, prompt)
+        image = await asyncio.to_thread(_generate_image_sync, model, prompt)
     except Exception:
         return None
     if image is not None:
@@ -96,6 +94,8 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
         return ThemeImages()
 
     topic = draft.segments[0].headline if draft.segments else "artificial intelligence"
-    thumbnail_bg = await _fetch_image(_THUMBNAIL_BG_PROMPT.format(topic=topic))
-    slide_bg = await _fetch_image(_SLIDE_BG_PROMPT)
+    thumbnail_bg = await _fetch_image(
+        settings.IMAGE_GEN_THUMBNAIL_MODEL, _THUMBNAIL_BG_PROMPT.format(topic=topic)
+    )
+    slide_bg = await _fetch_image(settings.IMAGE_GEN_SLIDE_MODEL, _SLIDE_BG_PROMPT)
     return ThemeImages(thumbnail_bg=thumbnail_bg, slide_bg=slide_bg)

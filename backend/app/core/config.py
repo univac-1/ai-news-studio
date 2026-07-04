@@ -17,8 +17,11 @@ class Settings(BaseSettings):
     GEMINI_PROJECT: str = ""
     GEMINI_LOCATION: str = "us-central1"
     IMAGE_GEN_ENABLED: bool = True
-    IMAGE_GEN_MODEL: str = "gemini-2.5-flash-image"
-    # gemini-2.5-flash-image は Vertex AI では global ロケーション提供のため、
+    # サムネイルはクリック率に直結するため高品質な Nano Banana Pro、
+    # スライド共通背景は使い回すので低コストな Nano Banana (flash-image) を使う
+    IMAGE_GEN_THUMBNAIL_MODEL: str = "gemini-3-pro-image-preview"
+    IMAGE_GEN_SLIDE_MODEL: str = "gemini-2.5-flash-image"
+    # 画像生成モデルは Vertex AI では global ロケーション提供のため、
     # テキスト用の GEMINI_LOCATION とは別に持つ
     IMAGE_GEN_LOCATION: str = "global"
 
