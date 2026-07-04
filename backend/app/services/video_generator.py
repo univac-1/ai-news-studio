@@ -1,5 +1,4 @@
 import json
-import math
 import subprocess
 import textwrap
 import wave
@@ -539,11 +538,9 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
 
         _write_part_srt(chunk_durations, part_srt_path)
 
-        zoompan_frames = math.ceil(part_duration * 30)
         fade_out_start = part_duration - 0.4
         vf = (
-            f"zoompan=z='min(zoom+0.0004,1.08)':d={zoompan_frames}"
-            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30"
+            f"setsar=1,fps=30"
             f",subtitles={part_srt_rel}"
             f":force_style='FontName={font_name},FontSize=20,Outline=2,MarginV=40'"
             f",fade=t=in:st=0:d=0.4"
@@ -551,6 +548,8 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         )
         _run_ffmpeg(
             [
+                "-loop",
+                "1",
                 "-i",
                 f"slides/slide_{index:03}.png",
                 "-i",
