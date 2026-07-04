@@ -32,9 +32,42 @@ _THUMBNAIL_BG_PROMPT = (
     "No text, no letters, no logos, no watermark, no people."
 )
 
+_THUMBNAIL_PROMPT = (
+    "Create a high-click-through YouTube thumbnail for a Japanese AI news video.\n\n"
+    "Canvas:\n"
+    "16:9 aspect ratio, 4K-quality composition, readable at smartphone size.\n\n"
+    "Main text:\n"
+    'Render the exact Japanese text: "{thumbnail_text}"\n'
+    "The text must be huge, bold, clean, high contrast, and perfectly legible.\n"
+    "Use thick Japanese gothic-style typography, white letters with a strong red "
+    "or yellow outline and dark shadow. Do not add any other text, captions, "
+    "letters, numbers, logos, watermarks, or UI labels.\n\n"
+    "News context:\n"
+    "{topic}\n\n"
+    "Visual concept:\n"
+    "A dramatic turning point in the AI industry. One large futuristic AI face "
+    "or humanoid tech figure on the left, intense glowing eyes, premium and "
+    "serious. Behind it, abstract but recognizable symbols of chips, code, "
+    "network nodes, data streams, and rising market charts. Avoid real company "
+    "logos or fake logo-like text.\n\n"
+    "Composition:\n"
+    "Clear left-right layout. Main subject on the left, headline text on the "
+    "right. One clear focal subject, strong foreground/background separation, "
+    "large clean area behind the headline, no clutter, no tiny details.\n\n"
+    "Camera and lighting:\n"
+    "Cinematic close-up, low angle, dramatic rim light, high contrast, sharp "
+    "focus, dark background with red, cyan, yellow, and white accent lighting. "
+    "Professional Japanese tech YouTube thumbnail style.\n\n"
+    "Avoid:\n"
+    "Messy UI, unreadable letters, misspelled Japanese, extra captions, random "
+    "English text, distorted logos, childish cartoon style, generic cyberpunk, "
+    "low contrast, too many subjects."
+)
+
 
 @dataclass
 class ThemeImages:
+    thumbnail: Image.Image | None = None
     thumbnail_bg: Image.Image | None = None
     slide_bg: Image.Image | None = None
 
@@ -84,6 +117,20 @@ async def _fetch_image(model: str, prompt: str) -> Image.Image | None:
     return image
 
 
+def _thumbnail_text_for_image(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "AI速報"
+    return lines[0][:8]
+
+
+def _thumbnail_topic(draft: VideoPlanDraft) -> str:
+    headlines = [seg.headline.strip() for seg in draft.segments[:3] if seg.headline.strip()]
+    if not headlines:
+        return "Important weekly artificial intelligence news."
+    return "\n".join(f"- {headline[:120]}" for headline in headlines)
+
+
 async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
     """サムネイル用・スライド共通の背景画像を生成する。
 
@@ -93,9 +140,18 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
     if not settings.IMAGE_GEN_ENABLED or not settings.GEMINI_PROJECT:
         return ThemeImages()
 
-    topic = draft.segments[0].headline if draft.segments else "artificial intelligence"
-    thumbnail_bg = await _fetch_image(
-        settings.IMAGE_GEN_THUMBNAIL_MODEL, _THUMBNAIL_BG_PROMPT.format(topic=topic)
+    topic = _thumbnail_topic(draft)
+    thumbnail = await _fetch_image(
+        settings.IMAGE_GEN_THUMBNAIL_MODEL,
+        _THUMBNAIL_PROMPT.format(
+            thumbnail_text=_thumbnail_text_for_image(draft.thumbnail_text),
+            topic=topic,
+        ),
     )
+    thumbnail_bg = None
+    if thumbnail is None:
+        thumbnail_bg = await _fetch_image(
+            settings.IMAGE_GEN_THUMBNAIL_MODEL, _THUMBNAIL_BG_PROMPT.format(topic=topic)
+        )
     slide_bg = await _fetch_image(settings.IMAGE_GEN_SLIDE_MODEL, _SLIDE_BG_PROMPT)
-    return ThemeImages(thumbnail_bg=thumbnail_bg, slide_bg=slide_bg)
+    return ThemeImages(thumbnail=thumbnail, thumbnail_bg=thumbnail_bg, slide_bg=slide_bg)

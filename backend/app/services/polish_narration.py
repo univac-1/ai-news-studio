@@ -31,6 +31,18 @@ def _parse_visual(raw: object) -> SegmentVisual | None:
     return SegmentVisual(type=visual_type, items=cleaned)
 
 
+def _clean_thumbnail_text_candidate(raw: object) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return None
+    text = re.sub(r"[、。，．！？!?「」『』【】\s]+", "", lines[0])
+    if not text:
+        return None
+    return text[:8]
+
+
 async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
     if not settings.GEMINI_PROJECT:
         return draft
@@ -84,8 +96,9 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "6. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
             "釣りタイトル(内容と乖離した誇張)は禁止。\n"
-            "7. thumbnail_text_candidates: サムネイル文言案を5つ。各案は改行区切りで最大3行、"
-            "1行目=最大8文字程度のパワーワード、2〜3行目=補足(各12文字以内)。\n\n"
+            "7. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
+            "各案は1行のみ、3〜8文字、句読点なし。強いパワーワードに絞る。"
+            "例: AI激変、覇権交代、無料化、Google反撃、AI危機。\n\n"
             "出力はJSONのみ:\n"
             '{"hook": "...", "intro": "...", "narrations": ["...", ...], '
             '"segments_meta": [{"title_ja": "...", "visual": {"type": "flow", "items": ["...", "...", "..."]}, '
@@ -184,13 +197,21 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             new_title = draft.title
 
         raw_thumb_candidates = result.get("thumbnail_text_candidates")
+        cleaned_thumb_candidates = []
+        if isinstance(raw_thumb_candidates, list):
+            cleaned_thumb_candidates = [
+                candidate
+                for candidate in (
+                    _clean_thumbnail_text_candidate(raw_candidate)
+                    for raw_candidate in raw_thumb_candidates
+                )
+                if candidate is not None
+            ]
         if (
-            isinstance(raw_thumb_candidates, list)
-            and len(raw_thumb_candidates) >= 1
-            and all(isinstance(c, str) and c.strip() for c in raw_thumb_candidates)
+            len(cleaned_thumb_candidates) >= 1
         ):
-            new_thumbnail_candidates = raw_thumb_candidates
-            new_thumbnail_text = raw_thumb_candidates[0]
+            new_thumbnail_candidates = cleaned_thumb_candidates
+            new_thumbnail_text = cleaned_thumb_candidates[0]
         else:
             new_thumbnail_candidates = draft.thumbnail_text_candidates
             new_thumbnail_text = draft.thumbnail_text

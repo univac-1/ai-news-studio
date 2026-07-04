@@ -389,6 +389,12 @@ def _render_thumbnail(
     image.convert("RGB").save(path)
 
 
+def _save_generated_thumbnail(image: Image.Image, path: Path) -> None:
+    thumb_width, thumb_height = 1280, 720
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _cover_crop(image, thumb_width, thumb_height).convert("RGB").save(path)
+
+
 def _draw_category_icon(
     draw: ImageDraw.ImageDraw, x: int, y: int, size: int, icon: str, color: str
 ) -> None:
@@ -943,9 +949,11 @@ def _write_srt(
 
 def _save_theme_assets(theme: ThemeImages, assets_dir: Path) -> None:
     # 使用した生成背景を成果物と一緒に保存する(再現・デバッグ用)
-    if theme.thumbnail_bg is None and theme.slide_bg is None:
+    if theme.thumbnail is None and theme.thumbnail_bg is None and theme.slide_bg is None:
         return
     assets_dir.mkdir(parents=True, exist_ok=True)
+    if theme.thumbnail is not None:
+        theme.thumbnail.save(assets_dir / "thumbnail_generated.png")
     if theme.thumbnail_bg is not None:
         theme.thumbnail_bg.save(assets_dir / "thumbnail_bg.png")
     if theme.slide_bg is not None:
@@ -1040,8 +1048,12 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     theme = await generate_theme_images(draft)
     _save_theme_assets(theme, work_dir / "assets")
 
-    # Generate thumbnail
-    _render_thumbnail(draft, work_dir / "thumbnail.png", theme.thumbnail_bg)
+    # Generate thumbnail. Prefer Nano Banana Pro text rendering; keep the local
+    # renderer as a fallback when image generation is unavailable or fails.
+    if theme.thumbnail is not None:
+        _save_generated_thumbnail(theme.thumbnail, work_dir / "thumbnail.png")
+    else:
+        _render_thumbnail(draft, work_dir / "thumbnail.png", theme.thumbnail_bg)
 
     slides = _build_slides(draft)
     reading_map = await build_reading_map(
