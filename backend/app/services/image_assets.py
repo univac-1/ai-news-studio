@@ -13,6 +13,7 @@ from ..schemas.draft import VideoPlanDraft, VideoSegment
 
 BASE_DIR = Path(__file__).parent.parent.parent
 CACHE_DIR = BASE_DIR / "data" / "cache" / "images"
+THUMBNAIL_IMAGE_MODEL = "gemini-3-pro-image"
 
 # 旧スライド背景プロンプト。スライドはローカル描画のダーク固定デザインに統一したため
 # 現在は未使用(ThemeImages.slide_bg は互換のため残し、常にNone)。
@@ -158,18 +159,13 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
 
     topic = _thumbnail_topic(draft)
     thumbnail = await _fetch_image(
-        settings.IMAGE_GEN_THUMBNAIL_MODEL,
+        THUMBNAIL_IMAGE_MODEL,
         _THUMBNAIL_PROMPT.format(
             thumbnail_text=_thumbnail_text_for_image(draft.thumbnail_text),
             topic=topic,
         ),
     )
-    thumbnail_bg = None
-    if thumbnail is None:
-        thumbnail_bg = await _fetch_image(
-            settings.IMAGE_GEN_THUMBNAIL_MODEL, _THUMBNAIL_BG_PROMPT.format(topic=topic)
-        )
-    return ThemeImages(thumbnail=thumbnail, thumbnail_bg=thumbnail_bg)
+    return ThemeImages(thumbnail=thumbnail)
 
 
 async def generate_segment_images(segments: list[VideoSegment]) -> dict[int, Image.Image]:

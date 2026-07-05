@@ -30,6 +30,10 @@ LOUDNESS_TP = -1.5
 LOUDNESS_LRA = 11.0
 
 
+class ThumbnailGenerationError(RuntimeError):
+    pass
+
+
 @dataclass
 class SlideEntry:
     number: int
@@ -1378,12 +1382,12 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     segment_images = await generate_segment_images(draft.segments)
     _save_segment_image_assets(segment_images, work_dir / "assets")
 
-    # Generate thumbnail. Prefer Nano Banana Pro text rendering; keep the local
-    # renderer as a fallback when image generation is unavailable or fails.
-    if theme.thumbnail is not None:
-        _save_generated_thumbnail(theme.thumbnail, work_dir / "thumbnail.png")
-    else:
-        _render_thumbnail(draft, work_dir / "thumbnail.png", theme.thumbnail_bg)
+    if theme.thumbnail is None:
+        raise ThumbnailGenerationError(
+            "サムネイル画像の生成に失敗しました。IMAGE_GEN_ENABLED と GEMINI_PROJECT、"
+            "画像生成モデルの権限・クォータを確認してください。"
+        )
+    _save_generated_thumbnail(theme.thumbnail, work_dir / "thumbnail.png")
 
     slides = _build_slides(draft, segment_images)
     reading_map = await build_reading_map(

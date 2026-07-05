@@ -7,6 +7,7 @@ from ..schemas.video import VideoArtifact, VideoArtifactList, VideoGenerationRes
 from ..services.draft_store import get_latest_draft
 from ..services.prepare_video_draft import prepare_draft_for_video
 from ..services.video_generator import (
+    ThumbnailGenerationError,
     generate_video_from_draft,
     get_video_artifact,
     get_video_file,
@@ -34,6 +35,8 @@ async def generate_from_latest(_: str = Depends(verify_credentials)):
             status_code=502,
             detail=f"VOICEVOX Engine に接続できません: {exc}",
         ) from exc
+    except ThumbnailGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=500,
@@ -60,6 +63,8 @@ async def generate_weekly_from_new_draft(_: str = Depends(verify_credentials)):
             status_code=502,
             detail=f"動画生成に失敗しました: VOICEVOX Engine に接続できません: {exc}",
         ) from exc
+    except ThumbnailGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=500,
