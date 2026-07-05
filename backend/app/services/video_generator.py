@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import wave
 from dataclasses import dataclass, field
@@ -63,6 +64,20 @@ class SlideSpec:
 
 def _now_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+_DATE_RANGE_RE = re.compile(r"[ \t]*[（(]?\d{1,2}月\d{1,2}日[〜～-]\d{1,2}月\d{1,2}日[）)]?[ \t]*")
+
+
+def _strip_date_range(text: str) -> str:
+    cleaned = _DATE_RANGE_RE.sub(" ", text).replace("（）", "").replace("()", "")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"[ \t]*—[ \t]*", " — ", cleaned)
+    return (
+        cleaned.replace(" 】", "】")
+        .replace("【 ", "【")
+        .strip()
+    )
 
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -680,44 +695,10 @@ def _draw_header(draw: ImageDraw.ImageDraw, spec: SlideSpec) -> None:
     draw.rectangle((80, 44, 104, 68), fill=_HEADER_ACCENT)
     draw.text((120, 40), "今週のAIニュース", font=_load_font(34, bold=True), fill="#ffffff")
 
-    # 右上の週バッジ(枠のみの角丸)。segmentのカテゴリチップはその左に並べる
     badge_left = WIDTH - 80
-    if spec.week_label:
-        week_font = _load_font(24, bold=True)
-        bb = week_font.getbbox(spec.week_label)
-        text_w, text_h = bb[2] - bb[0], bb[3] - bb[1]
-        badge_h = text_h + 16
-        badge_w = text_w + 28
-        y1 = 60 - badge_h // 2
-        x1 = WIDTH - 80 - badge_w
-        draw.rounded_rectangle(
-            (x1, y1, WIDTH - 80, y1 + badge_h), radius=8, outline=_HEADER_ACCENT, width=2
-        )
-        _draw_text_vcentered(draw, x1 + 14, y1, badge_h, spec.week_label, week_font, "#fbbf24")
-        badge_left = x1
-
     if spec.kind == "segment" and spec.category:
         chip_font = _load_font(30, bold=True)
         _draw_category_chip(draw, badge_left - 20, 38, category_style(spec.category), chip_font)
-
-
-def _draw_speaker_pill(draw: ImageDraw.ImageDraw, spec: SlideSpec) -> None:
-    """illustration/segmentスライド限定の話者ラベル。ヘッダー直下・本文開始前の
-    余白(y≈134)に小さな角丸ピルで話者名を表示する(ずんだもん=緑、AI専門家=青)。"""
-    if spec.kind == "illustration" and spec.narrator == "zundamon":
-        bg, fg, label = "#1f6b3a", "#eafff0", "ずんだもん"
-    elif spec.kind == "segment" and spec.narrator == "expert":
-        bg, fg, label = "#1e4a73", "#eaf6ff", "AI専門家"
-    else:
-        return
-    font = _load_font(22, bold=True)
-    text_w = _text_width(font, label)
-    pad_x = 18
-    pill_h = 32
-    pill_w = text_w + pad_x * 2
-    x1, y1 = 140, 134
-    draw.rounded_rectangle((x1, y1, x1 + pill_w, y1 + pill_h), radius=pill_h // 2, fill=bg)
-    _draw_text_vcentered(draw, x1 + pad_x, y1, pill_h, label, font, fg)
 
 
 def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
@@ -771,7 +752,6 @@ def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
         scrim_draw.line(((0, y), (WIDTH, y)), fill=(0, 0, 0, int(200 * ratio)))
     image = Image.alpha_composite(image, scrim)
     draw = ImageDraw.Draw(image)
-    _draw_speaker_pill(draw, spec)
 
     number_text = f"#{spec.number}"
     label = spec.title.split(" ", 1)[1] if " " in spec.title else spec.title
@@ -860,7 +840,6 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
     meta_font = _load_font(28)
 
     _draw_header(draw, spec)
-    _draw_speaker_pill(draw, spec)
 
     if spec.kind == "segment" and spec.category:
         accent = category_style(spec.category).color
@@ -1307,10 +1286,9 @@ def _build_slides(
         SlideSpec(
             kind="opening",
             title="今週のAIニュースラインナップ",
-            body=f"{draft.week_label}｜重要ニュース{len(draft.segments)}本を短時間でキャッチアップ",
+            body=f"重要ニュース{len(draft.segments)}本を短時間でキャッチアップ",
             narration=draft.intro,
             entries=entries,
-            week_label=draft.week_label,
             narrator="zundamon",
         )
     )
@@ -1537,11 +1515,13 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     )
 
     chapters = _build_chapters(slides, slide_offsets)
-    youtube_description = draft.description + "\n\n▼ チャプター\n" + chapters
+    youtube_description = _strip_date_range(draft.description) + "\n\n▼ チャプター\n" + chapters
+    title = _strip_date_range(draft.title)
+    title_candidates = [_strip_date_range(candidate) for candidate in draft.title_candidates]
 
     artifact = VideoArtifact(
         id=video_id,
-        title=draft.title,
+        title=title,
         created_at=datetime.now(timezone.utc).isoformat(),
         draft_generated_at=draft.generated_at,
         total_items=draft.total_items,
@@ -1552,7 +1532,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         thumbnail_path="thumbnail.png",
         chapters=chapters,
         youtube_description=youtube_description,
-        title_candidates=draft.title_candidates,
+        title_candidates=title_candidates,
         thumbnail_text_candidates=draft.thumbnail_text_candidates,
     )
     (work_dir / "metadata.json").write_text(

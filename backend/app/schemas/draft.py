@@ -18,6 +18,7 @@ class VideoSegment(BaseModel):
     slide_title: str
     narration: str
     intro_line: str = ""
+    reaction_line: str = ""
     source: str = ""
     title_ja: str = ""
     category: str = ""

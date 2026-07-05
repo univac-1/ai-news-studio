@@ -17,11 +17,15 @@ from .generate_weekly_video_plan import (
     contains_japanese,
     template_hook,
     template_intro_line,
+    template_reaction_line,
 )
 
 # ずんだもんの一言導入(intro_line)は30〜40字程度を目安にするが、
 # Gemini出力のブレを許容するため採用判定はやや広めの上限にする
 ZUNDAMON_LINE_MAX_CHARS = 40
+# ずんだもんの一言感想(reaction_line)は20〜30字程度を目安にするが、
+# Gemini出力のブレを許容するため採用判定はやや広めの上限にする
+ZUNDAMON_REACTION_MAX_CHARS = 30
 
 
 def _parse_visual(raw: object) -> SegmentVisual | None:
@@ -123,7 +127,8 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "最後にチャンネル登録・通知オンを促す。220文字以内。\n"
             "7. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
-            "釣りタイトル(内容と乖離した誇張)は禁止。\n"
+            "釣りタイトル(内容と乖離した誇張)は禁止。"
+            "日付範囲は入れない。\n"
             "8. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
             "各案は1行のみ、3〜8文字、句読点なし。強いパワーワードに絞る。"
             "例: AI激変、覇権交代、無料化、Google反撃、AI危機。\n\n"

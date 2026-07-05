@@ -43,19 +43,16 @@ def template_intro_line(number: int, title_ja: str) -> str:
     return f"{number}本目は、{title_ja}なのだ！"
 
 
-def _week_range_label(items: list[NewsItem]) -> str:
-    if not items:
-        return ""
-    dts = []
-    for item in items:
-        try:
-            dts.append(datetime.fromisoformat(item.published_at.replace("Z", "+00:00")))
-        except (ValueError, AttributeError):
-            pass
-    if not dts:
-        return ""
-    lo, hi = min(dts), max(dts)
-    return f"{lo.month}月{lo.day}日〜{hi.month}月{hi.day}日"
+_REACTION_TEMPLATES = (
+    "これは要チェックなのだ！",
+    "目が離せない話なのだ！",
+    "ボクも気になるのだ！",
+    "早く試してみたいのだ！",
+)
+
+
+def template_reaction_line(number: int) -> str:
+    return _REACTION_TEMPLATES[(number - 1) % len(_REACTION_TEMPLATES)]
 
 
 def fallback_title_ja(item: NewsItem) -> str:
@@ -74,7 +71,7 @@ def fallback_title_ja(item: NewsItem) -> str:
 
 
 def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
-    week_label = _week_range_label(items)
+    week_label = ""
 
     seen: set[str] = set()
     top_providers: list[str] = []
@@ -88,10 +85,10 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
     providers_str = "、".join(top_providers)
 
     if providers_str:
-        title = f"今週のAIニュース速報（{week_label}）— {providers_str} など注目アップデート"
+        title = f"今週のAIニュース速報 — {providers_str} など注目アップデート"
         thumbnail_text = f"今週のAI速報\n{providers_str} など\n注目{len(items)}本"
     else:
-        title = f"今週のAIニュース速報（{week_label}）— 重要AI動向まとめ"
+        title = "今週のAIニュース速報 — 重要AI動向まとめ"
         thumbnail_text = f"今週のAI速報\n重要{len(items)}本まとめ"
 
     # オープニング(5〜20秒想定)。価値提示→ラインナップ提示→本編へ。95字以内。
@@ -101,6 +98,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
     for i, item in enumerate(items, 1):
         title_ja = fallback_title_ja(item)
         intro_line = template_intro_line(i, title_ja)
+        reaction_line = template_reaction_line(i)
         narration = (
             f"{item.summary}\n"
             f"ポイントは、{item.impact}\n"
@@ -118,6 +116,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
                 slide_title=f"#{i} {title_ja}",
                 narration=narration,
                 intro_line=intro_line,
+                reaction_line=reaction_line,
                 source=item.source,
                 title_ja=title_ja,
                 category=categorize_news(item),
@@ -159,7 +158,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
             news_list_lines.append(f"・{item.title}（{item.source}）")
     news_list_str = "\n".join(news_list_lines)
     description = (
-        f"【今週のAIニュース速報 {week_label}】\n\n"
+        "【今週のAIニュース速報】\n\n"
         f"今週の重要AIニュース{len(items)}本を短時間でまとめて把握できます。\n\n"
         f"▼ 今週取り上げたニュース\n{news_list_str}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
