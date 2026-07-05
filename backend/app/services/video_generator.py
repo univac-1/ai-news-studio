@@ -3,6 +3,7 @@ import subprocess
 import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -18,6 +19,7 @@ from .kana_reading import build_reading_map, to_voice_text
 
 BASE_DIR = Path(__file__).parent.parent.parent
 GENERATED_DIR = BASE_DIR / "data" / "generated"
+CHARACTER_ASSETS_DIR = BASE_DIR / "app" / "assets" / "characters"
 WIDTH = 1920
 HEIGHT = 1080
 # ニュース間の区切りスライドは無音・固定尺(テンポ優先で2秒未満)
@@ -553,6 +555,92 @@ _DARK_LINE = "#1e293b"
 _HEADER_ACCENT = "#f59e0b"
 
 
+def _character_expression(spec: SlideSpec) -> str:
+    if spec.kind == "hook":
+        return "surprise"
+    if spec.kind in {"opening", "ranking"}:
+        return "happy"
+    if spec.kind == "illustration":
+        return "point"
+    if spec.kind == "divider":
+        return "point"
+    if spec.kind == "segment":
+        if spec.category == "security":
+            return "worried"
+        if spec.category == "devtools":
+            return "point"
+        if spec.category == "business":
+            return "thinking"
+        if spec.category in {"hardware", "aws"}:
+            return "thinking"
+        if spec.category == "media":
+            return "happy"
+        return "talk"
+    return "normal"
+
+
+@lru_cache(maxsize=16)
+def _load_character_image(name: str, expression: str) -> Image.Image | None:
+    base = CHARACTER_ASSETS_DIR / name
+    for filename in (f"{expression}.png", "normal.png"):
+        path = base / filename
+        if path.exists():
+            return Image.open(path).convert("RGBA")
+    return None
+
+
+def _character_image(spec: SlideSpec) -> Image.Image | None:
+    if not settings.CHARACTER_OVERLAY_ENABLED or not settings.CHARACTER_OVERLAY_NAME:
+        return None
+    return _load_character_image(settings.CHARACTER_OVERLAY_NAME, _character_expression(spec))
+
+
+def _character_reserve_width(spec: SlideSpec) -> int:
+    if _character_image(spec) is None:
+        return 0
+    if spec.kind in {"hook", "opening", "ranking"}:
+        return 420
+    if spec.kind == "segment":
+        return 260
+    return 0
+
+
+def _paste_character_overlay(image: Image.Image, spec: SlideSpec) -> Image.Image:
+    character = _character_image(spec)
+    if character is None:
+        return image
+
+    if spec.kind == "segment":
+        target_h = 330
+        right = WIDTH - 56
+        bottom = 826
+    elif spec.kind == "illustration":
+        target_h = 560
+        right = WIDTH - 90
+        bottom = 840
+    elif spec.kind == "divider":
+        target_h = 560
+        right = WIDTH - 130
+        bottom = 960
+    else:
+        target_h = 500
+        right = WIDTH - 90
+        bottom = 836
+
+    target_w = round(character.width * target_h / character.height)
+    resized = character.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    x = max(0, right - target_w)
+    y = max(0, bottom - target_h)
+
+    base = image.convert("RGBA")
+    shadow = Image.new("RGBA", resized.size, (0, 0, 0, 0))
+    alpha = resized.getchannel("A").point(lambda value: int(value * 0.42))
+    shadow.putalpha(alpha)
+    base.alpha_composite(shadow, (x + 14, y + 16))
+    base.alpha_composite(resized, (x, y))
+    return base
+
+
 def _draw_dark_background() -> Image.Image:
     """ブランド統一のダーク背景(RGBA)。紺→紫の縦グラデーションに、
     右下の橙グローと左上の青グローを重ねて単調さを消す。"""
@@ -636,7 +724,8 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     _draw_category_chip(draw, int((WIDTH + chip_w) / 2), y + 40, style, chip_font)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path)
+    image = _paste_character_overlay(image.convert("RGBA"), spec)
+    image.convert("RGB").save(path)
 
 
 def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
@@ -682,6 +771,7 @@ def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    image = _paste_character_overlay(image, spec)
     image.convert("RGB").save(path)
 
 
@@ -735,6 +825,8 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
     # 全スライド共通のダーク背景(生成背景は使わない)
     image = _draw_dark_background()
     draw = ImageDraw.Draw(image)
+    character_reserve = _character_reserve_width(spec)
+    content_width = WIDTH - 280 - character_reserve
 
     title_font = _load_font(68, bold=True)
     body_font = _load_font(40)
@@ -774,11 +866,14 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
         hook_label_font = _load_font(36, bold=True)
         hook_body_font = _load_font(64, bold=True)
         draw.text((140, 200), "今週の注目ニュース", font=hook_label_font, fill="#f87171")
-        _draw_wrapped(draw, (140, 320), spec.body, hook_body_font, _DARK_TITLE, 1580, 24, max_lines=3)
+        _draw_wrapped(
+            draw, (140, 320), spec.body, hook_body_font, _DARK_TITLE,
+            content_width, 24, max_lines=3,
+        )
     elif spec.kind == "opening":
         # 5〜20秒: 価値提示 + ラインナップ一覧
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, 1580, 18, max_lines=1)
-        _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), _DARK_MUTED, 1580, 12, max_lines=1)
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=1)
+        _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), _DARK_MUTED, content_width, 12, max_lines=1)
         num_font = _load_font(26, bold=True)
         y = 350
         shown = spec.entries[:7]
@@ -796,7 +891,8 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
                 "#ffffff",
             )
             _draw_fitted(
-                draw, (240, y + 2), entry.label, 36, 26, "#f1f5f9", 1440, 0, max_lines=1, bold=True
+                draw, (240, y + 2), entry.label, 36, 26, "#f1f5f9",
+                max(720, content_width - 100), 0, max_lines=1, bold=True,
             )
             y += 62
         if len(spec.entries) > len(shown):
@@ -807,7 +903,7 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
                 fill=_DARK_FAINT,
             )
     elif spec.kind == "ranking":
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, 1580, 18, max_lines=1)
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=1)
         medal_colors = ["#eab308", "#9ca3af", "#b45309"]
         rank_num_font = _load_font(34, bold=True)
         y = 310
@@ -826,11 +922,13 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
                 "#ffffff",
             )
             _draw_fitted(
-                draw, (250, y), f"{entry.label}", 40, 28, _DARK_TITLE, 1450, 0, max_lines=1, bold=True
+                draw, (250, y), f"{entry.label}", 40, 28, _DARK_TITLE,
+                max(760, content_width - 110), 0, max_lines=1, bold=True,
             )
             if entry.reason:
                 _draw_fitted(
-                    draw, (250, y + 52), entry.reason, 26, 22, _DARK_MUTED, 1450, 0, max_lines=1
+                    draw, (250, y + 52), entry.reason, 26, 22, _DARK_MUTED,
+                    max(760, content_width - 110), 0, max_lines=1,
                 )
             y += 110
         rest = spec.entries[3:7]
@@ -845,18 +943,18 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
         # タイトル → 一言ベネフィット → 英語原題 → (図解) → 箇条書き の縦積み構成。
         # タイトルが2行になった場合は後続の基準yを押し下げて重なりを防ぐ
         y_after_title = _draw_fitted(
-            draw, (140, 180), spec.title, 64, 48, _DARK_TITLE, 1580, 18, max_lines=2, bold=True
+            draw, (140, 180), spec.title, 64, 48, _DARK_TITLE, content_width, 18, max_lines=2, bold=True
         )
         benefit_y = max(330, y_after_title + 6)
         y_after_benefit = _draw_fitted(
-            draw, (140, benefit_y), spec.body, 34, 26, "#fbbf24", 1580, 8, max_lines=1, bold=True
+            draw, (140, benefit_y), spec.body, 34, 26, "#fbbf24", content_width, 8, max_lines=1, bold=True
         )
         # 元の見出し(英語など)は事実の原典として小さく併記する。補助情報なので、
         # min_sizeまで縮小してもなお収まらない場合に限り「...」省略を許容する
         if spec.headline and spec.headline not in spec.title:
             _draw_fitted(
                 draw, (140, max(395, y_after_benefit + 10)), spec.headline, 24, 20, _DARK_FAINT,
-                1580, 0, max_lines=1, allow_ellipsis=True,
+                content_width, 0, max_lines=1, allow_ellipsis=True,
             )
 
         if spec.visual:
@@ -875,18 +973,19 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
             body_x = 164 + _text_width(bullet_label_font, bullet_label) + 28
             y = _draw_fitted(
                 draw, (body_x, y), bullet_body, 30, 22, _DARK_BODY,
-                1720 - body_x, 8, max_lines=bullet_max_lines,
+                max(520, WIDTH - 200 - character_reserve - body_x), 8, max_lines=bullet_max_lines,
             )
             y += 40
     else:
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, 1580, 18, max_lines=4)
-        _draw_wrapped(draw, (140, 490), spec.body, body_font, _DARK_BODY, 1580, 18, max_lines=4)
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=4)
+        _draw_wrapped(draw, (140, 490), spec.body, body_font, _DARK_BODY, content_width, 18, max_lines=4)
 
     # Keep everything above y=860; the area below is reserved for burned-in subtitles
     draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
     if spec.kind == "segment" and spec.source:
         draw.text((80, 845), f"出典: {spec.source}", font=meta_font, fill=_DARK_FAINT)
     path.parent.mkdir(parents=True, exist_ok=True)
+    image = _paste_character_overlay(image, spec)
     image.convert("RGB").save(path)
 
 

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # 画像生成モデルは Vertex AI では global ロケーション提供のため、
     # テキスト用の GEMINI_LOCATION とは別に持つ
     IMAGE_GEN_LOCATION: str = "global"
+    CHARACTER_OVERLAY_ENABLED: bool = True
+    CHARACTER_OVERLAY_NAME: str = "zundamon"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
