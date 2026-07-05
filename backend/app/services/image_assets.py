@@ -14,7 +14,8 @@ from ..schemas.draft import VideoPlanDraft, VideoSegment
 BASE_DIR = Path(__file__).parent.parent.parent
 CACHE_DIR = BASE_DIR / "data" / "cache" / "images"
 
-# スライド背景はトピック非依存の固定プロンプトにして、キャッシュを恒久的に使い回す
+# 旧スライド背景プロンプト。スライドはローカル描画のダーク固定デザインに統一したため
+# 現在は未使用(ThemeImages.slide_bg は互換のため残し、常にNone)。
 _SLIDE_BG_PROMPT = (
     "Minimal abstract background for a professional news presentation slide. "
     "Very light off-white to pale blue-gray vertical gradient, with subtle thin "
@@ -145,10 +146,12 @@ def _thumbnail_topic(draft: VideoPlanDraft) -> str:
 
 
 async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
-    """サムネイル用・スライド共通の背景画像を生成する。
+    """サムネイル用の画像を生成する。
 
     GEMINI_PROJECT未設定・IMAGE_GEN_ENABLED=False・生成失敗時はNoneを返し、
     呼び出し側は従来のグラデーション描画にフォールバックする。
+    スライド背景はローカル描画のダーク固定デザインに統一したため生成しない
+    (slide_bgは常にNone)。
     """
     if not settings.IMAGE_GEN_ENABLED or not settings.GEMINI_PROJECT:
         return ThemeImages()
@@ -166,8 +169,7 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
         thumbnail_bg = await _fetch_image(
             settings.IMAGE_GEN_THUMBNAIL_MODEL, _THUMBNAIL_BG_PROMPT.format(topic=topic)
         )
-    slide_bg = await _fetch_image(settings.IMAGE_GEN_SLIDE_MODEL, _SLIDE_BG_PROMPT)
-    return ThemeImages(thumbnail=thumbnail, thumbnail_bg=thumbnail_bg, slide_bg=slide_bg)
+    return ThemeImages(thumbnail=thumbnail, thumbnail_bg=thumbnail_bg)
 
 
 async def generate_segment_images(segments: list[VideoSegment]) -> dict[int, Image.Image]:

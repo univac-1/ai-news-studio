@@ -189,9 +189,11 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
         fallback_applied.append(seg)
     segments = fallback_applied
 
-    # 4. フック/イントロの文字数強制。空・超過なら決定論的なテンプレートに置き換える
+    # 4. フック/イントロの文字数強制。空・超過・非日本語なら決定論的なテンプレートに置き換える。
+    # 日本語チェックがないと、上流でGeminiの翻訳前フックが残っていても
+    # (文字数だけは規約内のため)素通りしてしまう。
     hook = draft.hook
-    if not hook or len(hook) > HOOK_MAX_CHARS + 10:
+    if not hook or len(hook) > HOOK_MAX_CHARS + 10 or not contains_japanese(hook):
         hook = template_hook(segments[0].title_ja) if segments else template_hook("")
     intro = draft.intro
     if len(intro) > OPENING_MAX_CHARS + 15:

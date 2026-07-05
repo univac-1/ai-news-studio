@@ -51,6 +51,7 @@ class SlideSpec:
     visual: SegmentVisual | None = None
     entries: list[SlideEntry] = field(default_factory=list)
     image: Image.Image | None = None
+    week_label: str = ""
 
 
 def _now_id() -> str:
@@ -290,8 +291,8 @@ def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
     outro_line: str | None = None
     pending_divider: float | None = None
     for slide, offset in zip(slides, slide_offsets):
-        if slide.kind == "divider":
-            # ニュースのチャプターは直前の区切りスライドの頭から始める
+        if slide.kind in {"divider", "illustration"}:
+            # ニュースのチャプターは直前の区切り(イラスト)スライドの頭から始める
             pending_divider = offset
         elif slide.kind == "segment":
             start = pending_divider if pending_divider is not None else offset
@@ -543,6 +544,68 @@ def _text_width(font: ImageFont.ImageFont, text: str) -> int:
     return bbox[2] - bbox[0]
 
 
+# 全スライド共通のダークテーマ配色
+_DARK_TITLE = "#f8fafc"
+_DARK_BODY = "#e2e8f0"
+_DARK_MUTED = "#94a3b8"
+_DARK_FAINT = "#64748b"
+_DARK_LINE = "#1e293b"
+_HEADER_ACCENT = "#f59e0b"
+
+
+def _draw_dark_background() -> Image.Image:
+    """ブランド統一のダーク背景(RGBA)。紺→紫の縦グラデーションに、
+    右下の橙グローと左上の青グローを重ねて単調さを消す。"""
+    image = Image.new("RGB", (WIDTH, HEIGHT))
+    draw = ImageDraw.Draw(image)
+    start_color = (11, 16, 38)
+    end_color = (49, 35, 95)
+    for y in range(HEIGHT):
+        ratio = y / HEIGHT
+        r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+        g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+        b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+        draw.line(((0, y), (WIDTH, y)), fill=(r, g, b))
+
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    ov_draw = ImageDraw.Draw(overlay)
+    # 右下角付近の橙グロー
+    cx, cy, radius = WIDTH - 120, HEIGHT + 60, 600
+    ov_draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=(249, 115, 22, 35))
+    # 左上の青グロー
+    cx, cy, radius = 80, -40, 520
+    ov_draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=(59, 130, 246, 28))
+    return Image.alpha_composite(image.convert("RGBA"), overlay)
+
+
+def _draw_header(draw: ImageDraw.ImageDraw, spec: SlideSpec) -> None:
+    """共通ヘッダー: ダークバンド + 橙アクセント + 番組名 + 週バッジ(+segmentはカテゴリチップ)。"""
+    draw.rectangle((0, 0, WIDTH, 120), fill="#0b1120")
+    draw.rectangle((0, 118, WIDTH, 122), fill=_HEADER_ACCENT)
+    draw.rectangle((80, 44, 104, 68), fill=_HEADER_ACCENT)
+    draw.text((120, 40), "今週のAIニュース", font=_load_font(34, bold=True), fill="#ffffff")
+
+    # 右上の週バッジ(枠のみの角丸)。segmentのカテゴリチップはその左に並べる
+    badge_left = WIDTH - 80
+    if spec.week_label:
+        week_font = _load_font(24, bold=True)
+        bb = week_font.getbbox(spec.week_label)
+        text_w, text_h = bb[2] - bb[0], bb[3] - bb[1]
+        badge_h = text_h + 16
+        badge_w = text_w + 28
+        y1 = 60 - badge_h // 2
+        x1 = WIDTH - 80 - badge_w
+        draw.rounded_rectangle(
+            (x1, y1, WIDTH - 80, y1 + badge_h), radius=8, outline=_HEADER_ACCENT, width=2
+        )
+        _draw_text_vcentered(draw, x1 + 14, y1, badge_h, spec.week_label, week_font, "#fbbf24")
+        badge_left = x1
+
+    if spec.kind == "segment" and spec.category:
+        chip_font = _load_font(30, bold=True)
+        _draw_category_chip(draw, badge_left - 20, 38, category_style(spec.category), chip_font)
+
+
 def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     # 区切りスライドは背景画像を使わず、濃色フルブリードで場面転換を強調する
     style = category_style(spec.category)
@@ -577,12 +640,13 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
 
 
 def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
-    """ニュースごとのAI解説イラストスライド。全画面イラスト + 下部にカテゴリ#Nバッジと日本語タイトル。"""
+    """ニュースごとのAI解説イラストスライド(区切りを兼ねる)。
+    全画面イラスト(なければダーク背景) + 左下に巨大#N・カテゴリチップ・日本語タイトル。"""
     style = category_style(spec.category)
     if spec.image is not None:
         image = _cover_crop(spec.image, WIDTH, HEIGHT).convert("RGBA")
     else:
-        image = Image.new("RGBA", (WIDTH, HEIGHT), "#111827")
+        image = _draw_dark_background()
 
     # 下半分に黒のグラデーションスクリムを重ねる(_render_thumbnailと同じ手法。強めのアルファで可読性確保)
     scrim = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -596,25 +660,24 @@ def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
     number_text = f"#{spec.number}"
     label = spec.title.split(" ", 1)[1] if " " in spec.title else spec.title
 
-    badge_font = _load_font(30, bold=True)
-    title_font = _load_font(56, bold=True)
+    number_font = _load_font(130, bold=True)
+    title_font = _load_font(60, bold=True)
+    chip_font = _load_font(30, bold=True)
 
-    badge_h = 44
-    badge_pad_x = 20
-    badge_w = _text_width(badge_font, number_text) + badge_pad_x * 2
-    badge_x1, badge_y1 = 140, 760
-    draw.rounded_rectangle(
-        (badge_x1, badge_y1, badge_x1 + badge_w, badge_y1 + badge_h),
-        radius=badge_h // 2, fill=style.color,
+    # 巨大#N(カテゴリ色) + 右横にカテゴリチップ
+    draw.text(
+        (140, 620), number_text, font=number_font, fill=style.color,
+        stroke_width=4, stroke_fill="#0b1120",
     )
-    _draw_text_vcentered(
-        draw, badge_x1 + badge_pad_x, badge_y1, badge_h, number_text, badge_font, "#ffffff"
-    )
+    number_w = _text_width(number_font, number_text)
+    chip_label_w = _text_width(chip_font, style.label)
+    chip_w = 16 + 26 + 10 + chip_label_w + 16
+    _draw_category_chip(draw, 140 + number_w + 40 + chip_w, 670, style, chip_font)
 
-    title_y = badge_y1 + badge_h + 14
+    # 日本語タイトル(1行)。字幕領域(y=880以降)にかからない位置に置く
     title_line = _wrap_by_pixels(label, title_font, WIDTH - 280)[0]
     draw.text(
-        (140, title_y), title_line, font=title_font, fill="#ffffff",
+        (140, 770), title_line, font=title_font, fill="#ffffff",
         stroke_width=3, stroke_fill="#111827",
     )
 
@@ -639,30 +702,28 @@ def _render_visual_panel(
             draw.rounded_rectangle(
                 (x1, top + 10, x1 + box_w, bottom - 10),
                 radius=12,
-                fill="#f8fafc",
+                fill="#1e293b",
                 outline=accent,
                 width=3,
             )
             _draw_wrapped(
-                draw, (x1 + 20, top + 40), step, box_font, "#1f2937", box_w - 40, 10, max_lines=2
+                draw, (x1 + 20, top + 40), step, box_font, "#f1f5f9", box_w - 40, 10, max_lines=2
             )
             if i < n - 1:
                 arrow_x = x1 + box_w + 14
                 draw.text((arrow_x, (top + bottom) / 2 - 30), "→", font=arrow_font, fill=accent)
     else:  # command
         mono_font = _load_mono_font(28)
-        draw.rounded_rectangle((140, top, 1720, bottom), radius=12, fill="#0f172a")
+        draw.rounded_rectangle(
+            (140, top, 1720, bottom), radius=12, fill="#0f172a", outline="#334155", width=2
+        )
         y = top + 20
         for line in visual.items[:3]:
             draw.text((172, y), line, font=mono_font, fill="#e2e8f0")
             y += 40
 
 
-def _render_slide(
-    spec: SlideSpec,
-    path: Path,
-    background: Image.Image | None = None,
-) -> None:
+def _render_slide(spec: SlideSpec, path: Path) -> None:
     if spec.kind == "divider":
         _render_divider_slide(spec, path)
         return
@@ -671,63 +732,53 @@ def _render_slide(
         _render_illustration_slide(spec, path)
         return
 
-    if background is not None:
-        # 生成背景の上に白の半透明パネルを敷き、テキストの可読性を背景に依存させない
-        base = _cover_crop(background, WIDTH, HEIGHT).convert("RGBA")
-        panel = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
-        panel_draw = ImageDraw.Draw(panel)
-        panel_draw.rounded_rectangle(
-            (60, 150, WIDTH - 60, 880), radius=24, fill=(255, 255, 255, 215)
-        )
-        image = Image.alpha_composite(base, panel).convert("RGB")
-        draw = ImageDraw.Draw(image)
-    else:
-        # Create image with gradient background
-        image = Image.new("RGB", (WIDTH, HEIGHT), "#f8fafc")
-        draw = ImageDraw.Draw(image)
-
-        # Draw vertical gradient from #f8fafc to #e2e8f0
-        start_color = (248, 250, 252)  # #f8fafc
-        end_color = (226, 232, 240)    # #e2e8f0
-        for y in range(HEIGHT):
-            ratio = y / HEIGHT
-            r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
-            g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
-            b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
-            draw.line(((0, y), (WIDTH, y)), fill=(r, g, b))
+    # 全スライド共通のダーク背景(生成背景は使わない)
+    image = _draw_dark_background()
+    draw = ImageDraw.Draw(image)
 
     title_font = _load_font(68, bold=True)
     body_font = _load_font(40)
     meta_font = _load_font(28)
-    badge_font = _load_font(30, bold=True)
-    label_font = _load_font(24, bold=True)
-    chip_font = _load_font(30, bold=True)
 
-    draw.rectangle((0, 0, WIDTH, 120), fill="#111827")
-    draw.text((80, 40), "今週のAIニュース", font=badge_font, fill="#ffffff")
+    _draw_header(draw, spec)
 
     if spec.kind == "segment" and spec.category:
         accent = category_style(spec.category).color
-        # カテゴリチップをヘッダー内右端に表示する
-        _draw_category_chip(draw, WIDTH - 80, 38, category_style(spec.category), chip_font)
     elif spec.kind in {"cover", "intro", "outro", "opening", "ranking"}:
         accent = "#2563eb"
     elif spec.kind == "hook":
         accent = "#dc2626"
     else:
         accent = "#f59e0b"
-    draw.rectangle((80, 180, 96, 810), fill=accent)
+    if spec.kind != "segment":
+        # segmentは巨大番号透かし+箇条書き構成のため縦バーは描かない
+        draw.rectangle((80, 180, 96, 810), fill=accent)
+
+    if spec.kind == "segment":
+        # 巨大番号透かし(本文より先に描き、本文を上に載せる)
+        wm_font = _load_font(440, bold=True)
+        wm_text = f"{spec.number:02}"
+        wm_overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+        wm_draw = ImageDraw.Draw(wm_overlay)
+        wm_draw.text(
+            (WIDTH - 60 - _text_width(wm_font, wm_text), 240),
+            wm_text,
+            font=wm_font,
+            fill=(255, 255, 255, 18),
+        )
+        image = Image.alpha_composite(image, wm_overlay)
+        draw = ImageDraw.Draw(image)
 
     if spec.kind == "hook":
         # 冒頭0〜5秒: ラベル + 大きな一言のみ(読ませない、聞かせる)
         hook_label_font = _load_font(36, bold=True)
         hook_body_font = _load_font(64, bold=True)
-        draw.text((140, 200), "今週の注目ニュース", font=hook_label_font, fill=accent)
-        _draw_wrapped(draw, (140, 320), spec.body, hook_body_font, "#111827", 1580, 24, max_lines=3)
+        draw.text((140, 200), "今週の注目ニュース", font=hook_label_font, fill="#f87171")
+        _draw_wrapped(draw, (140, 320), spec.body, hook_body_font, _DARK_TITLE, 1580, 24, max_lines=3)
     elif spec.kind == "opening":
         # 5〜20秒: 価値提示 + ラインナップ一覧
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=1)
-        _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), "#4b5563", 1580, 12, max_lines=1)
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, 1580, 18, max_lines=1)
+        _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), _DARK_MUTED, 1580, 12, max_lines=1)
         num_font = _load_font(26, bold=True)
         y = 350
         shown = spec.entries[:7]
@@ -745,7 +796,7 @@ def _render_slide(
                 "#ffffff",
             )
             _draw_fitted(
-                draw, (240, y + 2), entry.label, 36, 26, "#1f2937", 1440, 0, max_lines=1, bold=True
+                draw, (240, y + 2), entry.label, 36, 26, "#f1f5f9", 1440, 0, max_lines=1, bold=True
             )
             y += 62
         if len(spec.entries) > len(shown):
@@ -753,10 +804,10 @@ def _render_slide(
                 (240, y + 2),
                 f"…ほか {len(spec.entries) - len(shown)} 本",
                 font=_load_font(32),
-                fill="#6b7280",
+                fill=_DARK_FAINT,
             )
     elif spec.kind == "ranking":
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=1)
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, 1580, 18, max_lines=1)
         medal_colors = ["#eab308", "#9ca3af", "#b45309"]
         rank_num_font = _load_font(34, bold=True)
         y = 310
@@ -775,82 +826,68 @@ def _render_slide(
                 "#ffffff",
             )
             _draw_fitted(
-                draw, (250, y), f"{entry.label}", 40, 28, "#111827", 1450, 0, max_lines=1, bold=True
+                draw, (250, y), f"{entry.label}", 40, 28, _DARK_TITLE, 1450, 0, max_lines=1, bold=True
             )
             if entry.reason:
                 _draw_fitted(
-                    draw, (250, y + 52), entry.reason, 26, 22, "#6b7280", 1450, 0, max_lines=1
+                    draw, (250, y + 52), entry.reason, 26, 22, _DARK_MUTED, 1450, 0, max_lines=1
                 )
             y += 110
         rest = spec.entries[3:7]
         rest_font = _load_font(30)
         y = 636
         for entry in rest:
-            draw.text((160, y), f"{entry.number}位  {entry.label}", font=rest_font, fill="#4b5563")
+            draw.text((160, y), f"{entry.number}位  {entry.label}", font=rest_font, fill="#cbd5e1")
             y += 44
         if len(spec.entries) > 7:
-            draw.text((160, y), f"…ほか {len(spec.entries) - 7} 本", font=rest_font, fill="#6b7280")
+            draw.text((160, y), f"…ほか {len(spec.entries) - 7} 本", font=rest_font, fill=_DARK_FAINT)
     elif spec.kind == "segment":
-        _draw_fitted(draw, (140, 180), spec.title, 68, 48, "#111827", 1580, 18, max_lines=2, bold=True)
+        # タイトル → 一言ベネフィット → 英語原題 → (図解) → 箇条書き の縦積み構成。
+        # タイトルが2行になった場合は後続の基準yを押し下げて重なりを防ぐ
+        y_after_title = _draw_fitted(
+            draw, (140, 180), spec.title, 64, 48, _DARK_TITLE, 1580, 18, max_lines=2, bold=True
+        )
+        benefit_y = max(330, y_after_title + 6)
+        y_after_benefit = _draw_fitted(
+            draw, (140, benefit_y), spec.body, 34, 26, "#fbbf24", 1580, 8, max_lines=1, bold=True
+        )
         # 元の見出し(英語など)は事実の原典として小さく併記する。補助情報なので、
         # min_sizeまで縮小してもなお収まらない場合に限り「...」省略を許容する
-        sub_y = 366
         if spec.headline and spec.headline not in spec.title:
             _draw_fitted(
-                draw, (140, sub_y), spec.headline, 28, 20, "#6b7280", 1580, 0,
-                max_lines=1, allow_ellipsis=True,
+                draw, (140, max(395, y_after_benefit + 10)), spec.headline, 24, 20, _DARK_FAINT,
+                1580, 0, max_lines=1, allow_ellipsis=True,
             )
-        # 詳細はImpact/Actionボックスに任せる。図解パネル(y=495)を侵食しないよう
-        # max_lines=1でまず縮小させ、min_sizeでも収まらない長文だけ28pxの複数行で描く
-        _draw_fitted(draw, (140, 415), spec.body, 40, 28, "#374151", 1580, 8, max_lines=1)
 
         if spec.visual:
             _render_visual_panel(draw, spec.visual, accent)
 
-        # Impact and Action boxes
-        box_y_start = 650
-        box_width = 700
-        box_height = 150
-        box_x_left = 140
-        box_x_right = box_x_left + box_width + 60
-
-        # Impact box
-        impact_bg = "#fef3c7"
-        impact_label_color = "#92400e"
-        draw.rounded_rectangle(
-            (box_x_left, box_y_start, box_x_left + box_width, box_y_start + box_height),
-            radius=12, fill=impact_bg, outline="#f59e0b", width=2
-        )
-        draw.text((box_x_left + 16, box_y_start + 12), "何が変わるか", font=label_font, fill=impact_label_color)
-        # ボックス内テキスト領域は高さ約95px。32px×3行はあふれるため max_lines=2 で
-        # 先に縮小させ、min_sizeでも収まらない長文だけ22pxの3行で描く
-        _draw_fitted(
-            draw, (box_x_left + 16, box_y_start + 50), spec.impact, 32, 22, "#1f2937",
-            box_width - 32, 10, max_lines=2,
-        )
-
-        # Action box
-        action_bg = "#dbeafe"
-        action_label_color = "#1e40af"
-        draw.rounded_rectangle(
-            (box_x_right, box_y_start, box_x_right + box_width, box_y_start + box_height),
-            radius=12, fill=action_bg, outline="#3b82f6", width=2
-        )
-        draw.text((box_x_right + 16, box_y_start + 12), "次にやること", font=label_font, fill=action_label_color)
-        _draw_fitted(
-            draw, (box_x_right + 16, box_y_start + 50), spec.action, 32, 22, "#1f2937",
-            box_width - 32, 10, max_lines=2,
-        )
+        # 箇条書き(旧Impact/Actionボックスの代替)。図解の有無で開始yを変える。
+        # 図解ありは残り高さが少ない(665〜820)ため max_lines=1 で先に縮小させ、
+        # バジェット超過の長文だけが最小サイズの折り返しになるようにする
+        bullet_label_font = _load_font(26, bold=True)
+        bullet_max_lines = 1 if spec.visual else 2
+        y = 665 if spec.visual else 500
+        for bullet_label, bullet_body in (("何が変わるか", spec.impact), ("次にやること", spec.action)):
+            # アクセント色の正方形ビュレット + ラベル + 同じ行から始まる本文
+            draw.rectangle((140, y + 11, 152, y + 23), fill=accent)
+            draw.text((164, y + 2), bullet_label, font=bullet_label_font, fill="#93c5fd")
+            body_x = 164 + _text_width(bullet_label_font, bullet_label) + 28
+            y = _draw_fitted(
+                draw, (body_x, y), bullet_body, 30, 22, _DARK_BODY,
+                1720 - body_x, 8, max_lines=bullet_max_lines,
+            )
+            y += 40
     else:
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, "#111827", 1580, 18, max_lines=4)
-        _draw_wrapped(draw, (140, 490), spec.body, body_font, "#374151", 1580, 18, max_lines=4)
+        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, 1580, 18, max_lines=4)
+        _draw_wrapped(draw, (140, 490), spec.body, body_font, _DARK_BODY, 1580, 18, max_lines=4)
 
     # Keep everything above y=860; the area below is reserved for burned-in subtitles
-    draw.rectangle((80, 830, WIDTH - 80, 833), fill="#e5e7eb")
+    draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
     if spec.kind == "segment" and spec.source:
-        draw.text((80, 845), f"出典: {spec.source}", font=meta_font, fill="#6b7280")
+        draw.text((80, 845), f"出典: {spec.source}", font=meta_font, fill=_DARK_FAINT)
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path)
+    image.convert("RGB").save(path)
 
 
 async def _synthesize_voice(
@@ -1119,7 +1156,13 @@ def _build_slides(
     # 旧構成の cover(タイトル読み上げ)と intro は廃止し、ラインナップ一覧に統合した。
     if draft.hook:
         slides.append(
-            SlideSpec(kind="hook", title="今週の注目", body=draft.hook, narration=draft.hook)
+            SlideSpec(
+                kind="hook",
+                title="今週の注目",
+                body=draft.hook,
+                narration=draft.hook,
+                week_label=draft.week_label,
+            )
         )
     slides.append(
         SlideSpec(
@@ -1128,43 +1171,45 @@ def _build_slides(
             body=f"{draft.week_label}｜重要ニュース{len(draft.segments)}本を短時間でキャッチアップ",
             narration=draft.intro,
             entries=entries,
+            week_label=draft.week_label,
         )
     )
     for segment in draft.segments:
         label = _display_label(segment)
-        slides.append(
-            SlideSpec(
-                kind="divider",
-                title=label,
-                body="",
-                narration="",
-                number=segment.number,
-                category=segment.category,
-            )
-        )
 
-        # ニュースごとの解説イラストスライド。生成画像があり、かつナレーションの先頭1文を
-        # 切り出した後も20字以上の本文が残る場合のみ挿入する(短すぎる残りは不自然なため)
+        # 区切り機能はイラストスライド(ナレーション先頭1文つき)に統合する。
+        # 先頭1文を切り出した後の本文が20字以上残る場合のみイラストを挿入し、
+        # 分割できない場合だけ従来の無音区切りにフォールバックする。
         segment_narration = segment.narration
-        segment_image = segment_images.get(segment.number)
-        if segment_image is not None:
-            sentence_end = segment_narration.find("。")
-            if sentence_end != -1:
-                first_sentence = segment_narration[: sentence_end + 1]
-                rest_narration = segment_narration[sentence_end + 1 :].strip()
-                if len(rest_narration) >= 20:
-                    slides.append(
-                        SlideSpec(
-                            kind="illustration",
-                            title=f"#{segment.number} {label}",
-                            body="",
-                            narration=first_sentence,
-                            number=segment.number,
-                            category=segment.category,
-                            image=segment_image,
-                        )
-                    )
-                    segment_narration = rest_narration
+        sentence_end = segment_narration.find("。")
+        rest_narration = (
+            segment_narration[sentence_end + 1 :].strip() if sentence_end != -1 else ""
+        )
+        if sentence_end != -1 and len(rest_narration) >= 20:
+            slides.append(
+                SlideSpec(
+                    kind="illustration",
+                    title=f"#{segment.number} {label}",
+                    body="",
+                    narration=segment_narration[: sentence_end + 1],
+                    number=segment.number,
+                    category=segment.category,
+                    image=segment_images.get(segment.number),
+                    week_label=draft.week_label,
+                )
+            )
+            segment_narration = rest_narration
+        else:
+            slides.append(
+                SlideSpec(
+                    kind="divider",
+                    title=label,
+                    body="",
+                    narration="",
+                    number=segment.number,
+                    category=segment.category,
+                )
+            )
 
         slides.append(
             SlideSpec(
@@ -1179,6 +1224,7 @@ def _build_slides(
                 category=segment.category,
                 headline=segment.headline,
                 visual=segment.visual,
+                week_label=draft.week_label,
             )
         )
     slides.append(
@@ -1188,6 +1234,7 @@ def _build_slides(
             body="",
             narration=draft.outro,
             entries=entries,
+            week_label=draft.week_label,
         )
     )
     return slides
@@ -1232,7 +1279,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         part_srt_rel = f"parts/part_{index:03}.srt"
         part_srt_path = work_dir / part_srt_rel
 
-        _render_slide(slide, slide_path, theme.slide_bg)
+        _render_slide(slide, slide_path)
 
         if slide.kind == "divider":
             # 区切りは無音・固定尺・字幕なし。WAVパラメータはVOICEVOX出力に揃える

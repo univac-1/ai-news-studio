@@ -15,6 +15,7 @@ from .generate_weekly_video_plan import (
     SUMMARY_MAX_CHARS,
     TITLE_JA_MAX_CHARS,
     contains_japanese,
+    template_hook,
 )
 
 
@@ -79,9 +80,16 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             f"2. intro: 5〜20秒のオープニング原稿。前半で「この動画を見る価値(何本を何分で把握できるか)」を提示し、"
             f"後半は「ラインナップは画面のとおりです。それでは1本目からいきましょう」のように"
             f"テンポよく本編へつなぐ。{OPENING_MAX_CHARS}文字以内。ニュースタイトルの列挙はしない(画面に一覧が出る)。\n"
-            "3. narrations: 各セグメントのナレーション。自然な話し言葉に書き換え、"
+            "3. narrations: 各セグメントのナレーション。"
+            "明るく親しみやすいニュースキャスターの一人称実況として、丁寧語(です・ます)ベースの"
+            "自然な話し言葉で書く。"
             "「インパクト:」「アクション:」のようなラベル読み上げをやめて内容を文章に織り込む。"
             "「つまり何が重要か」「誰に影響するか」「視聴者が次に何をすべきか」が明確に伝わる構成にする。"
+            "各ニュースに1回、短いリアクションや感想を入れる"
+            "(例: 「これはかなり便利です」「正直ちょっと怖い話です」「開発者にはうれしい変更です」)。"
+            "ただし事実の改変・誇張・断定的な予測は禁止。"
+            "スライドに表示される文言(タイトル・要約・箇条書き)をそのまま復唱しない。"
+            "スライドは「見せる」、ナレーションは「補足と実況」と役割分担する。"
             "セグメント間のつなぎ(「続いては〜」など)を入れる。事実・固有名詞・数値は変えない。"
             f"なお、要約は{SUMMARY_MAX_CHARS}文字以内、インパクトは{IMPACT_MAX_CHARS}文字以内、"
             f"アクションは{ACTION_MAX_CHARS}文字以内を目安に簡潔にまとめられている前提のため、"
@@ -181,13 +189,17 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
         # Defensively adopt hook, title_candidates, thumbnail_text from Gemini output.
         # Each field is only updated when Gemini returns a valid, non-empty value.
         # hookはGeminiが文字数指定を無視しても超過文を絶対に採用しないよう長さも検証する。
+        # 不採用時は draft.hook(title_ja翻訳前の英語ベースのフォールバック)ではなく、
+        # 翻訳後の new_segments[0].title_ja から再生成する(タイトルは日本語なのに
+        # フックだけ英語のまま、というズレを防ぐ)。
         raw_hook = result.get("hook")
+        fallback_hook = template_hook(new_segments[0].title_ja) if new_segments else draft.hook
         new_hook = (
             raw_hook
             if isinstance(raw_hook, str)
             and raw_hook.strip()
             and len(raw_hook.strip()) <= HOOK_MAX_CHARS + 10
-            else draft.hook
+            else fallback_hook
         )
 
         raw_candidates = result.get("title_candidates")
