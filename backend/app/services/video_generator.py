@@ -2,7 +2,7 @@ import json
 import re
 import subprocess
 import wave
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -628,12 +628,17 @@ def _character_image(spec: SlideSpec) -> Image.Image | None:
 
 
 def _character_reserve_width(spec: SlideSpec) -> int:
+    if spec.kind == "segment":
+        # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面に
+        # ずんだもんが現れる(_render_reaction_variant)。reaction_lineがある限り
+        # レイアウトは常にキャラ分の余白を空けておく
+        if spec.reaction_line and settings.CHARACTER_OVERLAY_ENABLED and settings.CHARACTER_OVERLAY_NAME:
+            return 260
+        return 0
     if _character_image(spec) is None:
         return 0
     if spec.kind in {"hook", "opening", "ranking"}:
         return 420
-    if spec.kind == "segment":
-        return 260
     return 0
 
 
@@ -771,20 +776,19 @@ def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
     chip_font = _load_font(30, bold=True)
 
     # 巨大#N(カテゴリ色) + 右横にカテゴリチップ
+    # 字幕は2行になるとy≈750から表示されるため、この一群はそれより十分上に収める
     draw.text(
-        (140, 620), number_text, font=number_font, fill=style.color,
+        (140, 420), number_text, font=number_font, fill=style.color,
         stroke_width=4, stroke_fill="#0b1120",
     )
     number_w = _text_width(number_font, number_text)
     chip_label_w = _text_width(chip_font, style.label)
     chip_w = 16 + 26 + 10 + chip_label_w + 16
-    _draw_category_chip(draw, 140 + number_w + 40 + chip_w, 670, style, chip_font)
+    _draw_category_chip(draw, 140 + number_w + 40 + chip_w, 470, style, chip_font)
 
-    # 日本語タイトル(1行)。字幕領域(y=880以降)にかからない位置に置く
-    title_line = _wrap_by_pixels(label, title_font, WIDTH - 280)[0]
-    draw.text(
-        (140, 770), title_line, font=title_font, fill="#ffffff",
-        stroke_width=3, stroke_fill="#111827",
+    # 日本語タイトル(最大2行)。字幕領域(2行時 y≈750〜)にかからない位置に置く
+    _draw_fitted(
+        draw, (140, 560), label, 60, 34, "#ffffff", WIDTH - 280, 12, max_lines=2, bold=True
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1004,6 +1008,15 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = _paste_character_overlay(image, spec)
     image.convert("RGB").save(path)
+
+
+def _render_reaction_variant(spec: SlideSpec, base_path: Path, reaction_path: Path) -> None:
+    """感想パート用のフレームを書き出す。レイアウトは解説フレームと同一のまま、
+    ずんだもんの立ち絵だけを追加する(narrator="expert"のためbase_pathには映っていない)。"""
+    image = Image.open(base_path).convert("RGBA")
+    image = _paste_character_overlay(image, replace(spec, narrator="zundamon"))
+    reaction_path.parent.mkdir(parents=True, exist_ok=True)
+    image.convert("RGB").save(reaction_path)
 
 
 async def _synthesize_voice(
@@ -1399,6 +1412,19 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
 
         _render_slide(slide, slide_path)
 
+        # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
+        # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
+        show_reaction_character = bool(
+            slide.kind == "segment"
+            and slide.reaction_line
+            and settings.CHARACTER_OVERLAY_ENABLED
+            and settings.CHARACTER_OVERLAY_NAME
+        )
+        reaction_slide_path = slides_dir / f"slide_{index:03}_reaction.png"
+        if show_reaction_character:
+            _render_reaction_variant(slide, slide_path, reaction_slide_path)
+
+        expert_duration = 0.0
         if slide.kind == "divider":
             # 区切りは無音・固定尺・字幕なし。WAVパラメータはVOICEVOX出力に揃える
             params = voice_wav_params or (1, 2, 24000)
@@ -1416,6 +1442,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
                 slide.narration, audio_path, reading_map, speaker_id
             )
             chunk_durations = [(text, dur, slide.narrator) for text, dur in primary_durations]
+            expert_duration = sum(dur for _, dur in primary_durations)
             if voice_wav_params is None:
                 voice_wav_params = _wav_params(audio_path)
 
@@ -1459,16 +1486,44 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")
         vf = ",".join(vf_filters)
 
-        args = [
-            "-loop",
-            "1",
-            "-i",
-            f"slides/slide_{index:03}.png",
-            "-i",
-            f"audio/audio_{index:03}.wav",
-            "-vf",
-            vf,
-        ]
+        if show_reaction_character:
+            # 感想が始まる瞬間(=解説音声の終わり)で解説フレーム→感想フレームに切り替える
+            switch_at = min(max(expert_duration, 0.1), part_duration - 0.1)
+            filter_complex = (
+                f"[0:v]trim=duration={switch_at:.3f},setpts=PTS-STARTPTS[v0];"
+                f"[1:v]trim=duration={(part_duration - switch_at):.3f},setpts=PTS-STARTPTS[v1];"
+                f"[v0][v1]concat=n=2:v=1:a=0[vcat];"
+                f"[vcat]{vf}[vout]"
+            )
+            args = [
+                "-loop",
+                "1",
+                "-i",
+                f"slides/slide_{index:03}.png",
+                "-loop",
+                "1",
+                "-i",
+                f"slides/slide_{index:03}_reaction.png",
+                "-i",
+                f"audio/audio_{index:03}.wav",
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[vout]",
+                "-map",
+                "2:a",
+            ]
+        else:
+            args = [
+                "-loop",
+                "1",
+                "-i",
+                f"slides/slide_{index:03}.png",
+                "-i",
+                f"audio/audio_{index:03}.wav",
+                "-vf",
+                vf,
+            ]
         if slide.kind != "divider":
             # 無音区切りへの loudnorm は不安定なため音声付きパートのみ正規化する
             args += [
