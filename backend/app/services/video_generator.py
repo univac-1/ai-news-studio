@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..core.config import settings
 from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
@@ -29,6 +29,8 @@ DIVIDER_DURATION = 1.8
 LOUDNESS_I = -16.0
 LOUDNESS_TP = -1.5
 LOUDNESS_LRA = 11.0
+SUBTITLE_MARGIN_V = 52
+SUBTITLE_MARGIN_H = 30
 
 
 class ThumbnailGenerationError(RuntimeError):
@@ -60,6 +62,7 @@ class SlideSpec:
     image: Image.Image | None = None
     week_label: str = ""
     narrator: str = "zundamon"
+    reaction_line: str = ""
 
 
 def _now_id() -> str:
@@ -591,8 +594,6 @@ def _character_expression(spec: SlideSpec) -> str:
         return "point"
     if spec.kind == "divider":
         return "point"
-    if spec.kind == "reaction":
-        return "worried" if spec.category == "security" else "happy"
     if spec.kind == "segment":
         if spec.category == "security":
             return "worried"
@@ -629,7 +630,7 @@ def _character_image(spec: SlideSpec) -> Image.Image | None:
 def _character_reserve_width(spec: SlideSpec) -> int:
     if _character_image(spec) is None:
         return 0
-    if spec.kind in {"hook", "opening", "ranking", "reaction"}:
+    if spec.kind in {"hook", "opening", "ranking"}:
         return 420
     if spec.kind == "segment":
         return 260
@@ -992,14 +993,6 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
                 max(520, WIDTH - 200 - character_reserve - body_x), 8, max_lines=bullet_max_lines,
             )
             y += 40
-    elif spec.kind == "reaction":
-        reaction_label_font = _load_font(30, bold=True)
-        reaction_body_font = _load_font(56, bold=True)
-        draw.text((140, 260), "ずんだもんの感想", font=reaction_label_font, fill="#fbbf24")
-        _draw_wrapped(
-            draw, (140, 360), spec.body, reaction_body_font, _DARK_TITLE,
-            content_width, 20, max_lines=3,
-        )
     else:
         _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=4)
         _draw_wrapped(draw, (140, 490), spec.body, body_font, _DARK_BODY, content_width, 18, max_lines=4)
@@ -1147,14 +1140,14 @@ def _format_srt_time(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 
-def _ass_bgr(hex_color: str) -> str:
-    """#RRGGBB を ASS字幕形式の &HBBGGRR& に変換する。"""
-    return f"&H{hex_color[5:7]}{hex_color[3:5]}{hex_color[1:3]}&"
-
-
-# 話者ごとの字幕色(淡色。ずんだもん=淡緑、AI専門家=淡青)
+# 話者ごとの字幕色(淡色。ずんだもん=淡緑、AI専門家=淡青)。行ごとに<font color>で
+# 埋め込むため、force_styleのPrimaryColour(ASSのBGR形式)ではなく通常のRRGGBB表記を使う
 _SUBTITLE_COLOR_ZUNDAMON = "#8BE58B"
 _SUBTITLE_COLOR_EXPERT = "#8BC7F0"
+
+
+def _subtitle_color(narrator: str) -> str:
+    return _SUBTITLE_COLOR_EXPERT if narrator == "expert" else _SUBTITLE_COLOR_ZUNDAMON
 
 
 _SUBTITLE_BREAK_CHARS = "、。！？!?　 "
@@ -1202,7 +1195,7 @@ def _wrap_cue_lines(text: str, max_line_chars: int) -> list[str]:
 
 
 def _srt_cues(
-    chunk_durations: list[tuple[str, float]],
+    chunk_durations: list[tuple[str, float, str]],
     offset: float,
     start_index: int,
     max_line_chars: int = 24,
@@ -1210,25 +1203,27 @@ def _srt_cues(
     cursor = offset
     index = start_index
     lines: list[str] = []
-    for text, dur in chunk_durations:
+    for text, dur, narrator in chunk_durations:
+        color = _subtitle_color(narrator)
         for cue_text, cue_dur in _split_subtitle_cues(text, dur, max_line_chars):
             end = cursor + cue_dur
             wrapped = "\n".join(_wrap_cue_lines(cue_text, max_line_chars))
+            colored = f'<font color="{color}">{wrapped}</font>'
             lines.append(
-                f"{index}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{wrapped}\n"
+                f"{index}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{colored}\n"
             )
             index += 1
             cursor = end
     return lines, index
 
 
-def _write_part_srt(chunk_durations: list[tuple[str, float]], path: Path) -> None:
+def _write_part_srt(chunk_durations: list[tuple[str, float, str]], path: Path) -> None:
     lines, _ = _srt_cues(chunk_durations, 0.0, 1)
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _write_srt(
-    all_chunk_durations: list[list[tuple[str, float]]],
+    all_chunk_durations: list[list[tuple[str, float, str]]],
     slide_offsets: list[float],
     path: Path,
 ) -> None:
@@ -1344,19 +1339,7 @@ def _build_slides(
                 visual=segment.visual,
                 week_label=draft.week_label,
                 narrator="expert",
-            )
-        )
-
-        slides.append(
-            SlideSpec(
-                kind="reaction",
-                title=f"#{segment.number} {label}",
-                body=segment.reaction_line,
-                narration=segment.reaction_line,
-                number=segment.number,
-                category=segment.category,
-                week_label=draft.week_label,
-                narrator="zundamon",
+                reaction_line=segment.reaction_line,
             )
         )
     slides.append(
@@ -1400,11 +1383,13 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     slides = _build_slides(draft, segment_images)
     reading_map = await build_reading_map(
         [slide.narration for slide in slides if slide.narration]
+        + [slide.reaction_line for slide in slides if slide.reaction_line]
     )
     padded_durations: list[float] = []
-    all_chunk_durations: list[list[tuple[str, float]]] = []
+    all_chunk_durations: list[list[tuple[str, float, str]]] = []
     font_name = _subtitle_font()
     voice_wav_params: tuple[int, int, int] | None = None
+    REACTION_GAP = 0.3
 
     for index, slide in enumerate(slides, 1):
         slide_path = slides_dir / f"slide_{index:03}.png"
@@ -1427,12 +1412,33 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
                 if slide.narrator == "expert"
                 else settings.VOICEVOX_SPEAKER_ID
             )
-            chunk_durations = await _synthesize_voice(
+            primary_durations = await _synthesize_voice(
                 slide.narration, audio_path, reading_map, speaker_id
             )
+            chunk_durations = [(text, dur, slide.narrator) for text, dur in primary_durations]
             if voice_wav_params is None:
                 voice_wav_params = _wav_params(audio_path)
-            audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)
+
+            if slide.reaction_line:
+                # AI専門家の解説の直後、画面はそのままでずんだもんの感想を続けて話す。
+                # 画像を差し替えず音声だけを継ぎ足すので、無音の間を挟んでから
+                # 別話者で合成した音声を同じWAVに連結する
+                reaction_audio_path = audio_dir / f"audio_{index:03}_reaction.wav"
+                reaction_durations = await _synthesize_voice(
+                    slide.reaction_line,
+                    reaction_audio_path,
+                    reading_map,
+                    settings.VOICEVOX_SPEAKER_ID,
+                )
+                gap_path = audio_dir / f"audio_{index:03}_gap.wav"
+                _write_silent_wav(gap_path, REACTION_GAP, *voice_wav_params)
+                _concat_wavs([audio_path, gap_path, reaction_audio_path], audio_path)
+                chunk_durations.append(("", REACTION_GAP, slide.narrator))
+                chunk_durations += [
+                    (text, dur, "zundamon") for text, dur in reaction_durations
+                ]
+
+            audio_duration = max(sum(dur for _, dur, _ in chunk_durations), 1.0)
             part_duration = audio_duration + 0.4
             fade_duration = 0.4
 
@@ -1443,13 +1449,11 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         vf_filters = ["setsar=1,fps=30"]
         if chunk_durations:
             _write_part_srt(chunk_durations, part_srt_path)
-            subtitle_color = _ass_bgr(
-                _SUBTITLE_COLOR_EXPERT if slide.narrator == "expert" else _SUBTITLE_COLOR_ZUNDAMON
-            )
             vf_filters.append(
                 f"subtitles={part_srt_rel}"
                 f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
-                f",BackColour=&H60000000,MarginV=18,MarginL=30,MarginR=30,PrimaryColour={subtitle_color}'"
+                f",BackColour=&H60000000,MarginV={SUBTITLE_MARGIN_V}"
+                f",MarginL={SUBTITLE_MARGIN_H},MarginR={SUBTITLE_MARGIN_H}'"
             )
         vf_filters.append(f"fade=t=in:st=0:d={fade_duration}")
         vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")
@@ -1535,7 +1539,8 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             "slide": slide_index,
             "chunks": [
                 {"text": chunk, "voice": to_voice_text(chunk, reading_map)}
-                for chunk, _ in chunk_durations
+                for chunk, _, _ in chunk_durations
+                if chunk
             ],
         }
         for slide_index, chunk_durations in enumerate(all_chunk_durations, 1)
