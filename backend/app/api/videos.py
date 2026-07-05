@@ -1,9 +1,9 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from ..core.security import verify_credentials
-from ..schemas.video import VideoArtifact, VideoArtifactList
+from ..schemas.video import VideoArtifact, VideoArtifactList, VideoGenerationResult
 from ..services.draft_store import get_latest_draft
 from ..services.prepare_video_draft import prepare_draft_for_video
 from ..services.video_generator import (
@@ -13,6 +13,7 @@ from ..services.video_generator import (
     get_video_thumbnail,
     list_video_artifacts,
 )
+from ..services.weekly_draft import NoPriorityNewsError, generate_new_weekly_draft
 
 router = APIRouter()
 
@@ -37,6 +38,32 @@ async def generate_from_latest(_: str = Depends(verify_credentials)):
         raise HTTPException(
             status_code=500,
             detail=f"FFmpeg の実行に失敗しました: {exc}",
+        ) from exc
+
+
+@router.post("/generate-weekly-from-new-draft", response_model=VideoGenerationResult)
+async def generate_weekly_from_new_draft(_: str = Depends(verify_credentials)):
+    try:
+        draft = await generate_new_weekly_draft()
+    except NoPriorityNewsError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="台本生成に失敗しました: 優先度Aのニュースが見つかりません（使用済み除外後）",
+        ) from exc
+
+    try:
+        video_draft = await prepare_draft_for_video(draft)
+        video = await generate_video_from_draft(video_draft)
+        return VideoGenerationResult(draft=video_draft, video=video)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"動画生成に失敗しました: VOICEVOX Engine に接続できません: {exc}",
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"動画生成に失敗しました: FFmpeg の実行に失敗しました: {exc}",
         ) from exc
 
 

@@ -21,12 +21,19 @@ export function useDraft() {
     try {
       const d = await api.generateDraft()
       setDraft(d)
+      return d
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成に失敗しました')
+      return null
     } finally {
       setGenerating(false)
     }
   }, [])
 
-  return { draft, loading, generating, error, generate }
+  const replaceDraft = useCallback((nextDraft: VideoPlanDraft) => {
+    setDraft(nextDraft)
+    setError(null)
+  }, [])
+
+  return { draft, loading, generating, error, generate, replaceDraft }
 }

@@ -26,12 +26,19 @@ export function useVideos() {
     try {
       const video = await api.generateVideoFromLatest()
       setVideos(prev => [video, ...prev.filter(item => item.id !== video.id)])
+      return video
     } catch (e) {
       setError(e instanceof Error ? e.message : '動画生成に失敗しました')
+      return null
     } finally {
       setGenerating(false)
     }
   }, [])
 
-  return { videos, loading, generating, error, generate, refetch }
+  const addVideo = useCallback((video: VideoArtifact) => {
+    setVideos(prev => [video, ...prev.filter(item => item.id !== video.id)])
+    setError(null)
+  }, [])
+
+  return { videos, loading, generating, error, generate, addVideo, refetch }
 }

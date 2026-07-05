@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from .draft import VideoPlanDraft
+
 
 class VideoArtifact(BaseModel):
     id: str
@@ -20,3 +22,8 @@ class VideoArtifact(BaseModel):
 
 class VideoArtifactList(BaseModel):
     items: list[VideoArtifact]
+
+
+class VideoGenerationResult(BaseModel):
+    draft: VideoPlanDraft
+    video: VideoArtifact

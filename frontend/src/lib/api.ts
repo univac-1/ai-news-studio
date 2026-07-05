@@ -1,5 +1,11 @@
 import { NewsItem } from '@/types/news'
-import { UsedNewsEntry, VideoArtifact, VideoArtifactList, VideoPlanDraft } from '@/types/draft'
+import {
+  UsedNewsEntry,
+  VideoArtifact,
+  VideoArtifactList,
+  VideoGenerationResult,
+  VideoPlanDraft,
+} from '@/types/draft'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
@@ -28,6 +34,8 @@ export const api = {
     }),
   generateVideoFromLatest: () =>
     req<VideoArtifact>('/api/videos/generate-from-latest', { method: 'POST' }),
+  generateWeeklyDraftAndVideo: () =>
+    req<VideoGenerationResult>('/api/videos/generate-weekly-from-new-draft', { method: 'POST' }),
   getVideos: () => req<VideoArtifactList>('/api/videos'),
   downloadVideo: async (videoId: string): Promise<void> => {
     const res = await fetch(`${BASE}/api/videos/${videoId}/download`)

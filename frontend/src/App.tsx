@@ -1,17 +1,19 @@
 import { useState } from 'react'
-import { Clapperboard, LayoutDashboard, Star, Video, CheckCircle } from 'lucide-react'
+import { CheckCircle, Clapperboard, Film, LayoutDashboard, Star, Video } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { PriorityNewsPage } from '@/pages/PriorityNewsPage'
 import { WeeklyDraftPage } from '@/pages/WeeklyDraftPage'
 import { UsedNewsPage } from '@/pages/UsedNewsPage'
+import { VideoListPage } from '@/pages/VideoListPage'
 
-type Tab = 'dashboard' | 'priority' | 'draft' | 'used'
+type Tab = 'dashboard' | 'priority' | 'draft' | 'videos' | 'used'
 
 const TABS = [
   { id: 'dashboard' as Tab, label: 'ダッシュボード', icon: LayoutDashboard },
   { id: 'priority' as Tab, label: '優先度Aニュース', icon: Star },
   { id: 'draft' as Tab, label: '週次ドラフト', icon: Video },
+  { id: 'videos' as Tab, label: '動画一覧', icon: Film },
   { id: 'used' as Tab, label: '使用済み', icon: CheckCircle },
 ]
 
@@ -51,6 +53,7 @@ export default function App() {
         {activeTab === 'dashboard' && <DashboardPage />}
         {activeTab === 'priority' && <PriorityNewsPage />}
         {activeTab === 'draft' && <WeeklyDraftPage />}
+        {activeTab === 'videos' && <VideoListPage />}
         {activeTab === 'used' && <UsedNewsPage />}
       </main>
     </div>

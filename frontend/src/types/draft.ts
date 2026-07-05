@@ -61,3 +61,8 @@ export interface VideoArtifact {
 export interface VideoArtifactList {
   items: VideoArtifact[]
 }
+
+export interface VideoGenerationResult {
+  draft: VideoPlanDraft
+  video: VideoArtifact
+}

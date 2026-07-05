@@ -1,34 +1,17 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Check, ChevronDown, ChevronUp, Copy, Download, Image, Loader2, Video } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2, PlayCircle, Video } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { CopyButton } from '@/components/CopyButton'
 import { useDraft } from '@/hooks/useDraft'
 import { useVideos } from '@/hooks/useVideos'
-import { VideoSegment } from '@/types/draft'
+import { VideoArtifact, VideoSegment } from '@/types/draft'
 import { api } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
-
-function CopyButton({ text, label = 'コピー' }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false)
-
-  function handleCopy() {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
-
-  return (
-    <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={handleCopy}>
-      {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-      {copied ? 'コピー済み' : label}
-    </Button>
-  )
-}
 
 function DraftSection({
   title,
@@ -86,101 +69,127 @@ function SegmentAccordion({ segment }: { segment: VideoSegment }) {
   )
 }
 
+function GeneratedVideoNotice({ video }: { video: VideoArtifact }) {
+  return (
+    <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+      動画を生成しました: {video.title} / {Math.round(video.duration_seconds)}秒 /{' '}
+      {video.slide_count}枚
+    </div>
+  )
+}
+
 export function WeeklyDraftPage() {
-  const { draft, loading, generating, error, generate } = useDraft()
+  const { draft, loading, generating, error, generate, replaceDraft } = useDraft()
   const {
-    videos,
-    loading: videosLoading,
     generating: videoGenerating,
     error: videoError,
     generate: generateVideo,
   } = useVideos()
+  const [bulkGenerating, setBulkGenerating] = useState(false)
+  const [bulkStatus, setBulkStatus] = useState<string | null>(null)
+  const [bulkError, setBulkError] = useState<string | null>(null)
+  const [lastVideo, setLastVideo] = useState<VideoArtifact | null>(null)
+
+  const busy = generating || videoGenerating || bulkGenerating
+
+  async function handleGenerateDraftOnly() {
+    const nextDraft = await generate()
+    if (nextDraft) {
+      setBulkError(null)
+      setLastVideo(null)
+    }
+  }
+
+  async function handleGenerateVideoOnly() {
+    const video = await generateVideo()
+    if (video) {
+      setBulkError(null)
+      setLastVideo(video)
+    }
+  }
+
+  async function handleBulkGenerate() {
+    setBulkGenerating(true)
+    setBulkStatus('台本生成と動画生成を実行中です。完了まで数分かかることがあります。')
+    setBulkError(null)
+    setLastVideo(null)
+    try {
+      const result = await api.generateWeeklyDraftAndVideo()
+      replaceDraft(result.draft)
+      setLastVideo(result.video)
+      setBulkStatus('完了しました。生成済み動画は「動画一覧」から整理できます。')
+    } catch (e) {
+      setBulkStatus(null)
+      setBulkError(e instanceof Error ? e.message : '一括生成に失敗しました')
+    } finally {
+      setBulkGenerating(false)
+    }
+  }
 
   return (
     <ScrollArea className="h-full">
       <div className="p-6 space-y-4 max-w-3xl mx-auto">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold">週次ドラフト</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              台本生成から動画生成までの制作操作をまとめて実行します
+            </p>
             {draft && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground mt-1">
                 最終生成: {formatDate(draft.generated_at)} / {draft.total_items}件のニュースを使用
               </p>
             )}
           </div>
-          <Button onClick={generate} disabled={generating} size="sm" className="shrink-0">
-            {generating ? '生成中...' : draft ? '再生成' : '週次ドラフトを生成'}
-          </Button>
         </div>
 
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">
-            <div>
-              <CardTitle className="text-sm font-semibold">動画生成</CardTitle>
-              <p className="text-xs text-muted-foreground mt-1">
-                最新ドラフトから VOICEVOX 音声付きの 16:9 MP4 を生成します
-              </p>
-            </div>
-            <Button
-              onClick={generateVideo}
-              disabled={!draft || videoGenerating}
-              size="sm"
-              className="shrink-0"
-            >
-              {videoGenerating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {videoGenerating ? '生成中...' : '動画を生成'}
-            </Button>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-sm font-semibold">制作</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-3">
-            {videoError && (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {videoError}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button onClick={handleBulkGenerate} disabled={busy} className="sm:flex-1">
+                {bulkGenerating ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <PlayCircle className="w-4 h-4" />
+                )}
+                {bulkGenerating ? '一括生成中...' : '台本と動画を一括生成'}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleGenerateDraftOnly}
+                disabled={busy}
+                className="sm:w-36"
+              >
+                {generating && <Loader2 className="w-4 h-4 animate-spin" />}
+                台本のみ
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleGenerateVideoOnly}
+                disabled={!draft || busy}
+                className="sm:w-44"
+              >
+                {videoGenerating && <Loader2 className="w-4 h-4 animate-spin" />}
+                最新台本から動画
+              </Button>
+            </div>
+
+            {bulkStatus && (
+              <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                {bulkStatus}
               </div>
             )}
-            {videosLoading ? (
-              <Skeleton className="h-14 w-full rounded-lg" />
-            ) : videos.length === 0 ? (
-              <p className="text-sm text-muted-foreground">生成済み動画はまだありません</p>
-            ) : (
-              <div className="space-y-2">
-                {videos.slice(0, 5).map(video => (
-                  <div
-                    key={video.id}
-                    className="flex items-center justify-between gap-3 rounded-lg border bg-white px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{video.title}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatDate(video.created_at)} / {Math.round(video.duration_seconds)}秒 / {video.slide_count}枚
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {video.youtube_description && (
-                        <CopyButton text={video.youtube_description} label="概要欄" />
-                      )}
-                      {video.thumbnail_path && (
-                        <Button variant="outline" size="sm" onClick={() => api.downloadThumbnail(video.id)}>
-                          <Image className="w-3.5 h-3.5" />
-                          サムネ
-                        </Button>
-                      )}
-                      <Button variant="outline" size="sm" onClick={() => api.downloadVideo(video.id)}>
-                        <Download className="w-3.5 h-3.5" />
-                        MP4
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+            {lastVideo && <GeneratedVideoNotice video={lastVideo} />}
+            {(error || videoError || bulkError) && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {bulkError || videoError || error}
               </div>
             )}
           </CardContent>
         </Card>
-
-        {error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
 
         {loading ? (
           <div className="space-y-3">
@@ -191,15 +200,13 @@ export function WeeklyDraftPage() {
         ) : !draft ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
             <Video className="w-8 h-8 opacity-30" />
-            <p className="text-sm">「週次ドラフトを生成」ボタンを押してください</p>
+            <p className="text-sm">「台本と動画を一括生成」または「台本のみ」を実行してください</p>
           </div>
         ) : (
           <div className="space-y-4">
             {(() => {
               const hasCandidates = draft.title_candidates && draft.title_candidates.length >= 2
-              const copyContent = hasCandidates
-                ? draft.title_candidates!.join('\n')
-                : draft.title
+              const copyContent = hasCandidates ? draft.title_candidates!.join('\n') : draft.title
               return (
                 <DraftSection title="タイトル案" copyText={copyContent}>
                   {hasCandidates ? (
@@ -254,7 +261,9 @@ export function WeeklyDraftPage() {
               <CardContent className="px-4 pb-4 space-y-3">
                 {draft.hook && (
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground mb-1.5">フック（冒頭ティザー）</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1.5">
+                      フック（冒頭ティザー）
+                    </p>
                     <p className="text-sm leading-relaxed bg-muted/30 rounded-lg px-3 py-2.5">
                       {draft.hook}
                     </p>

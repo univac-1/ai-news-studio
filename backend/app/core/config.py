@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     VOICEVOX_POST_PHONEME_LENGTH: float = 0.3
     GEMINI_PROJECT: str = ""
     GEMINI_LOCATION: str = "us-central1"
+    NEWS_SEARCH_REFRESH_ENABLED: bool = True
+    NEWS_SEARCH_MODEL: str = "gemini-2.5-flash"
     IMAGE_GEN_ENABLED: bool = True
     # サムネイルはクリック率に直結するため高品質な Nano Banana Pro、
     # スライド共通背景は使い回すので低コストな Nano Banana (flash-image) を使う
