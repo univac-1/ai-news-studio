@@ -94,8 +94,15 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
 
 
 def _load_mono_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    # コマンド例の描画用。等幅が見つからなければ通常フォントにフォールバック
+    # コマンド例の描画用。日本語を含むため、CJK対応フォントを先に使う。
     candidates = [
+        "C:/Windows/Fonts/BIZ-UDGothicR.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/NotoSansJP-VF.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansMonoCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "C:/Windows/Fonts/consola.ttf",
         "C:/Windows/Fonts/CascadiaMono.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
