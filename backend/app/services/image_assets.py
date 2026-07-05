@@ -25,45 +25,28 @@ _SLIDE_BG_PROMPT = (
     "Flat 2D design. No text, no letters, no logos, no watermark, no people."
 )
 
+# サムネイルは「背景のみ」を生成し、日本語テキストとキャラクターはローカルで合成する。
+# モデルに日本語を描かせると誤字・配置崩れが運任せになるため、文字は一切描かせない。
+# ずんだもんを右下に、見出しを左に載せる前提でレイアウトを指示している。
 _THUMBNAIL_BG_PROMPT = (
-    "Abstract futuristic technology background for an AI news YouTube thumbnail "
-    "about this topic: {topic}. "
-    "Dark navy to electric blue gradient, glowing neural network nodes and circuit "
-    "patterns concentrated on the right side, left half darker and simpler for text overlay. "
-    "High contrast, cinematic lighting, energetic. "
-    "No text, no letters, no logos, no watermark, no people."
-)
-
-_THUMBNAIL_PROMPT = (
-    "Create a high-click-through YouTube thumbnail for a Japanese AI news video.\n\n"
-    "Canvas:\n"
-    "16:9 aspect ratio, 4K-quality composition, readable at smartphone size.\n\n"
-    "Main text:\n"
-    'Render the exact Japanese text: "{thumbnail_text}"\n'
-    "The text must be huge, bold, clean, high contrast, and perfectly legible.\n"
-    "Use thick Japanese gothic-style typography, white letters with a strong red "
-    "or yellow outline and dark shadow. Do not add any other text, captions, "
-    "letters, numbers, logos, watermarks, or UI labels.\n\n"
-    "News context:\n"
-    "{topic}\n\n"
-    "Visual concept:\n"
-    "A dramatic turning point in the AI industry. One large futuristic AI face "
-    "or humanoid tech figure on the left, intense glowing eyes, premium and "
-    "serious. Behind it, abstract but recognizable symbols of chips, code, "
-    "network nodes, data streams, and rising market charts. Avoid real company "
-    "logos or fake logo-like text.\n\n"
+    "Dramatic cinematic key visual for a Japanese tech-news YouTube thumbnail.\n\n"
+    "This week's biggest AI news:\n{topic}\n\n"
+    "Depict exactly ONE concrete, instantly recognizable hero subject that symbolizes "
+    "this news — for example a glowing AI processor chip, a smartphone projecting a "
+    "hologram, a robot hand, a server room, a soaring holographic chart. Choose the "
+    "single object that best matches the news above. No collage, no split screen.\n\n"
     "Composition:\n"
-    "Clear left-right layout. Main subject on the left, headline text on the "
-    "right. One clear focal subject, strong foreground/background separation, "
-    "large clean area behind the headline, no clutter, no tiny details.\n\n"
-    "Camera and lighting:\n"
-    "Cinematic close-up, low angle, dramatic rim light, high contrast, sharp "
-    "focus, dark background with red, cyan, yellow, and white accent lighting. "
-    "Professional Japanese tech YouTube thumbnail style.\n\n"
-    "Avoid:\n"
-    "Messy UI, unreadable letters, misspelled Japanese, extra captions, random "
-    "English text, distorted logos, childish cartoon style, generic cyberpunk, "
-    "low contrast, too many subjects."
+    "Hero subject large in the upper-right two-thirds of the frame, slightly angled, "
+    "dynamic diagonal energy. The left 40% of the frame and the bottom-right corner "
+    "must stay much darker and almost empty (clean soft dark gradient) because a bold "
+    "headline and a mascot character will be overlaid there later.\n\n"
+    "Style and lighting:\n"
+    "Photoreal 3D render, breaking-news urgency, strong rim light, vivid electric blue, "
+    "cyan and orange accent lighting on a very dark navy background, high contrast, "
+    "sharp focus on the subject, subtle glow particles and light streaks, premium and "
+    "modern, readable at smartphone size.\n\n"
+    "Strictly forbidden: any text, letters, numbers, typography, captions, subtitles, "
+    "logos, watermarks, user interface, screenshots, people, faces, cartoon characters."
 )
 
 
@@ -132,40 +115,38 @@ async def _fetch_image(model: str, prompt: str) -> Image.Image | None:
     return image
 
 
-def _thumbnail_text_for_image(text: str) -> str:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return "AI速報"
-    return lines[0][:8]
-
-
 def _thumbnail_topic(draft: VideoPlanDraft) -> str:
-    headlines = [seg.headline.strip() for seg in draft.segments[:3] if seg.headline.strip()]
-    if not headlines:
-        return "Important weekly artificial intelligence news."
-    return "\n".join(f"- {headline[:120]}" for headline in headlines)
+    # 被写体を1つに絞らせるため、最重要ニュース(#1)だけを渡す。
+    # 複数見出しを混ぜると寄せ集めのぼやけた画になりやすい。
+    for seg in draft.segments:
+        headline = seg.headline.strip()
+        if headline:
+            topic = headline[:160]
+            summary = seg.summary.strip()
+            if summary:
+                topic += ". " + summary[:160]
+            return topic
+    return "Important weekly artificial intelligence news."
 
 
 async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
-    """サムネイル用の画像を生成する。
+    """サムネイル用の背景画像(文字なし)を生成する。
 
     GEMINI_PROJECT未設定・IMAGE_GEN_ENABLED=False・生成失敗時はNoneを返し、
-    呼び出し側は従来のグラデーション描画にフォールバックする。
+    呼び出し側でエラーにするかフォールバックするかを判断する。
+    見出しテキストとずんだもんは video_generator 側でローカル合成するため、
+    ここでは文字・キャラクターを含まない背景のみを生成する。
     スライド背景はローカル描画のダーク固定デザインに統一したため生成しない
     (slide_bgは常にNone)。
     """
     if not settings.IMAGE_GEN_ENABLED or not settings.GEMINI_PROJECT:
         return ThemeImages()
 
-    topic = _thumbnail_topic(draft)
-    thumbnail = await _fetch_image(
+    thumbnail_bg = await _fetch_image(
         THUMBNAIL_IMAGE_MODEL,
-        _THUMBNAIL_PROMPT.format(
-            thumbnail_text=_thumbnail_text_for_image(draft.thumbnail_text),
-            topic=topic,
-        ),
+        _THUMBNAIL_BG_PROMPT.format(topic=_thumbnail_topic(draft)),
     )
-    return ThemeImages(thumbnail=thumbnail)
+    return ThemeImages(thumbnail_bg=thumbnail_bg)
 
 
 async def generate_segment_images(segments: list[VideoSegment]) -> dict[int, Image.Image]:

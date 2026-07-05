@@ -29,7 +29,7 @@ def shorten(text: str, max_chars: int) -> str:
 
 
 def template_hook(title_ja: str) -> str:
-    return f"{shorten(title_ja, TITLE_JA_MAX_CHARS)}。今週最大のAIニュースです。"
+    return f"{title_ja}。今週最大のAIニュースです。"
 
 
 def template_intro(count: int) -> str:
@@ -56,18 +56,15 @@ def template_reaction_line(number: int) -> str:
 
 
 def fallback_title_ja(item: NewsItem) -> str:
-    """スマホでも読める短い日本語タイトルのフォールバック。
+    """スライド表示用タイトルのフォールバック。
 
     Gemini が使えない場合に使う。モデル名が分かればそれを軸に、
-    なければ元タイトルの先頭を切り出す（事実の改変はしない）。
+    なければ元タイトルを省略せずに使い、描画側の折り返しと縮小で収める。
     """
     model_name = item.model_name if item.model_name not in ("Unknown", "") else ""
     if model_name and len(model_name) <= TITLE_JA_MAX_CHARS:
         return model_name
-    title = item.title.strip()
-    if len(title) <= TITLE_JA_MAX_CHARS:
-        return title
-    return title[: TITLE_JA_MAX_CHARS - 1] + "…"
+    return item.title.strip()
 
 
 def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
@@ -84,9 +81,11 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
                 break
     providers_str = "、".join(top_providers)
 
+    # サムネ文言は「メイン\nサブ」の2行構成(polish_narration の候補と同じ形式)。
+    # 1行目がサムネ最大サイズの見出し、2行目が補足サブコピーになる。
     if providers_str:
         title = f"今週のAIニュース速報 — {providers_str} など注目アップデート"
-        thumbnail_text = f"今週のAI速報\n{providers_str} など\n注目{len(items)}本"
+        thumbnail_text = f"今週のAI速報\n{providers_str}など注目{len(items)}本"
     else:
         title = "今週のAIニュース速報 — 重要AI動向まとめ"
         thumbnail_text = f"今週のAI速報\n重要{len(items)}本まとめ"

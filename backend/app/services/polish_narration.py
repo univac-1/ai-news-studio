@@ -45,15 +45,25 @@ def _parse_visual(raw: object) -> SegmentVisual | None:
 
 
 def _clean_thumbnail_text_candidate(raw: object) -> str | None:
+    """「メイン｜サブ」形式の候補を検証し、描画用の「メイン\nサブ」形式に整える。
+
+    メインはサムネに最大サイズで載せる2〜8文字のパワーワード。
+    サブは補足の短い一言(任意)。サブが不正でもメインが有効なら採用する。
+    """
     if not isinstance(raw, str):
         return None
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    if not lines:
+    parts = [part.strip() for part in re.split(r"[｜|\n]", raw) if part.strip()]
+    if not parts:
         return None
-    text = re.sub(r"[、。，．！？!?「」『』【】\s]+", "", lines[0])
-    if not text:
+    main = re.sub(r"[、。，．！？!?「」『』【】\s]+", "", parts[0])
+    if not main:
         return None
-    return text[:8]
+    main = main[:8]
+    sub = ""
+    if len(parts) >= 2:
+        sub = re.sub(r"[。，．「」『』【】]+", "", parts[1])
+        sub = re.sub(r"\s+", " ", sub).strip()[:14]
+    return f"{main}\n{sub}" if sub else main
 
 
 async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
@@ -135,9 +145,15 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
             "釣りタイトル(内容と乖離した誇張)は禁止。"
             "日付範囲は入れない。\n"
-            "9. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
-            "各案は1行のみ、3〜8文字、句読点なし。強いパワーワードに絞る。"
-            "例: AI激変、覇権交代、無料化、Google反撃、AI危機。\n\n"
+            "9. thumbnail_text_candidates: サムネイル文言案を5つ。各案は「メイン｜サブ」形式の1つの文字列。\n"
+            "   - メイン: サムネに最大サイズで載せる一言。2〜8文字、句読点なし。"
+            "最重要ニュースの固有名詞・数字・意外性を軸にした具体的なパワーワードにする。"
+            "「AI激変」「衝撃」のような抽象語だけの案は避ける。"
+            "例: GPT-6来た｜…、Gemini無料化｜…、中国AI猛追｜…。\n"
+            "   - サブ: メインの文脈を一言で補足する6〜14文字。視聴者への影響や意外性を足す。"
+            "例: …｜開発者は今すぐ確認、…｜勢力図が一変、…｜性能2倍で半額。\n"
+            "   5案のうち少なくとも3案はメインに固有名詞または数字を含めること。"
+            "内容と乖離した誇張は禁止。\n\n"
             "出力はJSONのみ:\n"
             '{"hook": "...", "intro": "...", "narrations": ["...", ...], '
             '"zundamon_lines": ["...", ...], '

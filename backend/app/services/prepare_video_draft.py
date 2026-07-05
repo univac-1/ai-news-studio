@@ -180,11 +180,11 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
                 updated_segments.append(seg.model_copy(update=update) if update else seg)
             segments = updated_segments
 
-    # 3. title_ja最終フォールバック。まだ無効ならheadlineを機械的に短縮する
+    # 3. title_ja最終フォールバック。まだ無効ならheadlineを省略せずに使う。
     fallback_applied = []
     for seg in segments:
         if not _valid_title_ja(seg.title_ja):
-            title_ja = shorten(seg.headline, TITLE_JA_MAX_CHARS)
+            title_ja = seg.headline.strip()
             seg = seg.model_copy(
                 update={"title_ja": title_ja, "slide_title": f"#{seg.number} {title_ja}"}
             )

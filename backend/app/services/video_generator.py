@@ -14,7 +14,7 @@ from ..core.config import settings
 from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
 from ..schemas.video import VideoArtifact
 from .categorize import CategoryStyle, category_style
-from .generate_weekly_video_plan import TITLE_JA_MAX_CHARS, contains_japanese, shorten
+from .generate_weekly_video_plan import contains_japanese
 from .image_assets import ThemeImages, generate_segment_images, generate_theme_images
 from .kana_reading import build_reading_map, to_voice_text
 
@@ -154,9 +154,6 @@ def _draw_wrapped(
 ) -> int:
     x, y = xy
     lines = _wrap_by_pixels(text, font, max_width)
-    if max_lines is not None and len(lines) > max_lines:
-        lines = lines[:max_lines]
-        lines[-1] = f"{lines[-1].rstrip()}..."
     for line in lines:
         draw.text((x, y), line, font=font, fill=fill)
         bbox = font.getbbox(line or " ")
@@ -190,7 +187,6 @@ def _draw_fitted(
     line_gap: int,
     max_lines: int,
     bold: bool = False,
-    allow_ellipsis: bool = False,
 ) -> int:
     """base_size から2px刻みで縮小し、max_lines以内に全文が収まる最大サイズで描く。
 
@@ -207,9 +203,6 @@ def _draw_fitted(
         size = max(size - 2, min_size)
         font = _load_font(size, bold)
         lines = _wrap_by_pixels(text, font, max_width)
-    if len(lines) > max_lines and allow_ellipsis:
-        lines = lines[:max_lines]
-        lines[-1] = f"{lines[-1].rstrip()}..."
     # allow_ellipsis=Falseの場合、min_sizeでも max_lines に収まらないときは
     # 省略せず全行描く(内容を欠落させない)
     for line in lines:
@@ -345,27 +338,138 @@ def _cover_crop(image: Image.Image, width: int, height: int) -> Image.Image:
     return resized.crop((left, top, left + width, top + height))
 
 
+def _headline_text_layer(
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    gradient_top: tuple[int, int, int],
+    gradient_bottom: tuple[int, int, int],
+    outer_stroke: int,
+    inner_stroke: int,
+) -> Image.Image:
+    """黒の極太縁 + 白の中縁 + 縦グラデーション塗りの見出しテキストレイヤーを返す。
+
+    PILのstrokeは1回の描画で1色しか使えないため、外縁→内縁→本体の3回に分けて
+    重ね描きし、本体はテキスト形状をマスクにしたグラデーションで塗る。
+    """
+    bbox = font.getbbox(text or " ")
+    pad = outer_stroke + 10
+    width = bbox[2] - bbox[0] + pad * 2
+    height = bbox[3] - bbox[1] + pad * 2
+    origin = (pad - bbox[0], pad - bbox[1])
+
+    layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    draw.text(origin, text, font=font, fill="#0b0f1a", stroke_width=outer_stroke, stroke_fill="#0b0f1a")
+    if inner_stroke > 0:
+        draw.text(origin, text, font=font, fill="#ffffff", stroke_width=inner_stroke, stroke_fill="#ffffff")
+
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).text(origin, text, font=font, fill=255)
+    gradient = Image.new("RGB", (width, height))
+    gradient_draw = ImageDraw.Draw(gradient)
+    for y in range(height):
+        ratio = y / max(height - 1, 1)
+        r = int(gradient_top[0] + (gradient_bottom[0] - gradient_top[0]) * ratio)
+        g = int(gradient_top[1] + (gradient_bottom[1] - gradient_top[1]) * ratio)
+        b = int(gradient_top[2] + (gradient_bottom[2] - gradient_top[2]) * ratio)
+        gradient_draw.line(((0, y), (width, y)), fill=(r, g, b))
+    layer.paste(gradient, (0, 0), mask)
+    return layer
+
+
+def _paste_with_drop_shadow(
+    base: Image.Image,
+    layer: Image.Image,
+    pos: tuple[int, int],
+    offset: tuple[int, int] = (7, 9),
+    blur: int = 6,
+    opacity: float = 0.55,
+) -> None:
+    shadow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    shadow_alpha = layer.getchannel("A").point(lambda v: int(v * opacity))
+    shadow.paste(Image.new("RGBA", layer.size, (5, 5, 10, 255)), (0, 0), shadow_alpha)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+    base.alpha_composite(shadow, (pos[0] + offset[0], pos[1] + offset[1]))
+    base.alpha_composite(layer, pos)
+
+
+# モデル名等の連なり判定。「GPT-6」「v2.5」を分断しないよう記号も含める
+_ASCII_RE = re.compile(r"[0-9A-Za-z\-+._]")
+
+
+def _split_headline(text: str) -> list[str]:
+    """長いメイン見出しを2行に割る。英数字の連なり(モデル名など)は分断しない。"""
+    if len(text) < 6:
+        return [text]
+    middle = len(text) / 2
+    best: int | None = None
+    for i in range(1, len(text)):
+        # 英数字の途中(「GPT-6」の中など)では改行しない
+        if _ASCII_RE.match(text[i - 1]) and _ASCII_RE.match(text[i]):
+            continue
+        if best is None or abs(i - middle) < abs(best - middle):
+            best = i
+    if best is None:
+        return [text]
+    return [text[:best], text[best:]]
+
+
+def _fit_font_size(lines: list[str], max_width: int, start: int, minimum: int) -> int:
+    size = start
+    while size > minimum:
+        font = _load_font(size, bold=True)
+        if max(_text_width(font, line) for line in lines) <= max_width:
+            break
+        size -= 8
+    return size
+
+
+def _thumbnail_character_layer(target_height: int) -> Image.Image | None:
+    """驚き顔ずんだもんのバストアップに白フチを付けたレイヤー。無効時はNone。"""
+    if not settings.CHARACTER_OVERLAY_ENABLED or not settings.CHARACTER_OVERLAY_NAME:
+        return None
+    character = _load_character_image(settings.CHARACTER_OVERLAY_NAME, "surprise")
+    if character is None:
+        return None
+
+    # 全身立ち絵の上半分(顔+挙げた両手)だけ使い、顔を大きく見せる
+    bust = character.crop((0, 0, character.width, round(character.height * 0.56)))
+    target_w = round(bust.width * target_height / bust.height)
+    resized = bust.resize((target_w, target_height), Image.Resampling.LANCZOS)
+
+    # 白フチはアルファ膨張で作る。切断した下端にも付くが、下端は画面外に
+    # 落として配置するため見えない
+    outline_pad = 8
+    padded = Image.new(
+        "RGBA", (target_w + outline_pad * 2, target_height + outline_pad * 2), (0, 0, 0, 0)
+    )
+    padded.alpha_composite(resized, (outline_pad, outline_pad))
+    outline_alpha = padded.getchannel("A").filter(ImageFilter.MaxFilter(outline_pad * 2 + 1))
+    layer = Image.new("RGBA", padded.size, (0, 0, 0, 0))
+    layer.paste(Image.new("RGBA", padded.size, (255, 255, 255, 255)), (0, 0), outline_alpha)
+    layer.alpha_composite(padded)
+    return layer
+
+
 def _render_thumbnail(
     draft: VideoPlanDraft, path: Path, background: Image.Image | None = None
 ) -> None:
+    """バズ寄せの定番レイアウトでサムネイルを描画する。
+
+    生成背景(文字なし)の上に、左に黄グラデ+黒縁の巨大見出し、
+    その下に赤帯のサブコピー、右下に白フチ付きずんだもん(驚き顔)を重ねる。
+    テキストとキャラをローカル合成することで、日本語の誤字や配置崩れを防ぐ。
+    """
     thumb_width, thumb_height = 1280, 720
 
     if background is not None:
         image = _cover_crop(background, thumb_width, thumb_height).convert("RGBA")
-        # 生成背景の明るさに依存せず文字が読めるよう、下半分に黒のグラデーションスクリムを重ねる
-        scrim = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
-        scrim_draw = ImageDraw.Draw(scrim)
-        for y in range(thumb_height // 2, thumb_height):
-            ratio = (y - thumb_height // 2) / (thumb_height / 2)
-            scrim_draw.line(((0, y), (thumb_width, y)), fill=(0, 0, 0, int(160 * ratio)))
-        image = Image.alpha_composite(image, scrim)
-        draw = ImageDraw.Draw(image)
     else:
-        # Background gradient (#111827 → #1e3a8a), working in RGBA for compositing
+        # フォールバック: 紺→藍の縦グラデーション背景
         image = Image.new("RGBA", (thumb_width, thumb_height))
         draw = ImageDraw.Draw(image)
-        start_color = (17, 24, 39)    # #111827
-        end_color = (30, 58, 138)     # #1e3a8a
+        start_color = (13, 18, 38)
+        end_color = (30, 58, 138)
         for y in range(thumb_height):
             ratio = y / thumb_height
             r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
@@ -373,115 +477,118 @@ def _render_thumbnail(
             b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
             draw.line(((0, y), (thumb_width, y)), fill=(r, g, b, 255))
 
-        # Semi-transparent accent shapes on separate overlay
-        overlay = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
-        ov_draw = ImageDraw.Draw(overlay)
-        # Large circle anchored to bottom-right corner
-        cx, cy, cr = thumb_width - 80, thumb_height + 30, 360
-        ov_draw.ellipse((cx - cr, cy - cr, cx + cr, cy + cr), fill=(59, 130, 246, 55))
-        # Small diagonal triangle accent top-right
-        ov_draw.polygon(
-            [(thumb_width - 260, 0), (thumb_width, 0), (thumb_width, 220)],
-            fill=(250, 204, 21, 40),
-        )
-        image = Image.alpha_composite(image, overlay)
-        draw = ImageDraw.Draw(image)
+    # 背景の明るさに依存せず文字が読めるよう、テキストが載る左側を横グラデーションで暗くする
+    scrim = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
+    scrim_draw = ImageDraw.Draw(scrim)
+    scrim_end_x = round(thumb_width * 0.62)
+    for x in range(scrim_end_x):
+        ratio = 1.0 - x / scrim_end_x
+        scrim_draw.line(((x, 0), (x, thumb_height)), fill=(2, 4, 12, int(150 * ratio)))
+    image = Image.alpha_composite(image, scrim)
 
-    # Red badge: "今週のAI速報"
-    badge_font = _load_font(34, bold=True)
-    badge_text = "今週のAI速報"
-    bb = badge_font.getbbox(badge_text)
-    btw, bth = bb[2] - bb[0], bb[3] - bb[1]
-    bpad_x, bpad_y = 22, 10
-    bx1, by1 = 56, 26
-    bx2, by2 = bx1 + btw + bpad_x * 2, by1 + bth + bpad_y * 2
-    draw.rounded_rectangle((bx1, by1, bx2, by2), radius=8, fill="#dc2626")
-    draw.text((bx1 + bpad_x, by1 + bpad_y), badge_text, font=badge_font, fill="#ffffff")
+    # thumbnail_text: 1行目=メイン(パワーワード)、2行目以降=サブコピー
+    text_lines = [line.strip() for line in draft.thumbnail_text.split("\n")]
+    main_line = text_lines[0] if text_lines and text_lines[0] else "AI速報"
+    sub_line = " ".join(line for line in text_lines[1:] if line)
 
-    # Parse thumbnail_text: first line → main, rest → sub
-    text_lines = draft.thumbnail_text.split("\n")
-    main_line = text_lines[0] if text_lines else ""
-    sub_lines = [ln for ln in text_lines[1:] if ln]
-
-    # Auto-fit main font (start 200, min 90, step -10) to fit 1150 px wide
-    main_size = 200
-    while main_size > 90:
-        mf = _load_font(main_size, bold=True)
-        mb = mf.getbbox(main_line or " ")
-        if (mb[2] - mb[0]) <= 1150:
-            break
-        main_size -= 10
+    # メイン見出し: まず1行で試し、小さくなりすぎるなら2行に割って各行を大きくする
+    text_max_width = 740
+    main_size = _fit_font_size([main_line], text_max_width, start=250, minimum=96)
+    main_lines = [main_line]
+    if main_size < 150:
+        split_lines = _split_headline(main_line)
+        if len(split_lines) == 2:
+            split_size = _fit_font_size(split_lines, text_max_width, start=210, minimum=96)
+            if split_size > main_size:
+                main_lines = split_lines
+                main_size = split_size
     main_font = _load_font(main_size, bold=True)
-    main_bbox = main_font.getbbox(main_line or " ")
-    main_h = main_bbox[3] - main_bbox[1]
+    outer_stroke = max(round(main_size * 0.085), 8)
+    inner_stroke = max(round(main_size * 0.03), 3)
 
-    # Auto-fit sub font (start at half of main, min 50, step -10)
-    sub_size = max(main_size // 2, 50)
-    if sub_lines:
-        while sub_size > 40:
-            sf_test = _load_font(sub_size, bold=True)
-            max_sw = max(
-                sf_test.getbbox(sl or " ")[2] - sf_test.getbbox(sl or " ")[0]
-                for sl in sub_lines
-            )
-            if max_sw <= 1150:
-                break
-            sub_size -= 10
-    sub_font = _load_font(sub_size, bold=True)
-
-    # Measure sub-line heights
-    line_gap = 20
-    sub_heights: list[int] = []
-    for sl in sub_lines:
-        sb = sub_font.getbbox(sl or " ")
-        sub_heights.append(sb[3] - sb[1])
-
-    total_text_h = main_h + sum(h + line_gap for h in sub_heights)
-
-    # Vertically center text block between badge bottom and footer area
-    footer_top = thumb_height - 70
-    content_top = by2 + 20
-    center_y = (content_top + footer_top) // 2
-    y_cur = center_y - total_text_h // 2
-
-    # Draw main line (yellow, heavy stroke)
-    main_w = main_bbox[2] - main_bbox[0]
-    draw.text(
-        ((thumb_width - main_w) // 2, y_cur),
-        main_line,
-        font=main_font,
-        fill="#facc15",
-        stroke_width=10,
-        stroke_fill="#111827",
-    )
-    y_cur += main_h + line_gap
-
-    # Draw sub lines (white, lighter stroke)
-    for sl, sh in zip(sub_lines, sub_heights):
-        sb = sub_font.getbbox(sl or " ")
-        sw = sb[2] - sb[0]
-        draw.text(
-            ((thumb_width - sw) // 2, y_cur),
-            sl,
-            font=sub_font,
-            fill="#ffffff",
-            stroke_width=6,
-            stroke_fill="#111827",
+    main_layers = [
+        _headline_text_layer(
+            line,
+            main_font,
+            gradient_top=(255, 244, 92),
+            gradient_bottom=(255, 170, 0),
+            outer_stroke=outer_stroke,
+            inner_stroke=inner_stroke,
         )
-        y_cur += sh + line_gap
+        for line in main_lines
+    ]
 
-    # Footer label
-    footer_font = _load_font(28)
-    draw.text((40, thumb_height - 52), "AI News Studio", font=footer_font, fill="#9ca3af")
+    # サブコピー: 赤帯ボックスに白文字
+    sub_layer: Image.Image | None = None
+    if sub_line:
+        sub_size = _fit_font_size([sub_line], text_max_width - 60, start=54, minimum=30)
+        sub_font = _load_font(sub_size, bold=True)
+        sub_bbox = sub_font.getbbox(sub_line)
+        pad_x, pad_y = 24, 14
+        box_w = sub_bbox[2] - sub_bbox[0] + pad_x * 2
+        box_h = sub_bbox[3] - sub_bbox[1] + pad_y * 2
+        sub_layer = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+        sub_draw = ImageDraw.Draw(sub_layer)
+        sub_draw.rounded_rectangle((0, 0, box_w - 1, box_h - 1), radius=10, fill="#dc2626")
+        sub_draw.text(
+            (pad_x - sub_bbox[0], pad_y - sub_bbox[1]), sub_line, font=sub_font, fill="#ffffff"
+        )
+
+    # テキストブロックを1枚のレイヤーにまとめ、少し傾けて勢いを出す
+    line_gap = 6
+    block_w = max(
+        [layer.width for layer in main_layers] + ([sub_layer.width] if sub_layer else [])
+    )
+    block_h = sum(layer.height + line_gap for layer in main_layers)
+    if sub_layer is not None:
+        block_h += sub_layer.height + 14
+    block = Image.new("RGBA", (block_w + 40, block_h + 40), (0, 0, 0, 0))
+    y_cur = 20
+    for layer in main_layers:
+        block.alpha_composite(layer, (20, y_cur))
+        y_cur += layer.height + line_gap
+    if sub_layer is not None:
+        _paste_with_drop_shadow(block, sub_layer, (20 + outer_stroke, y_cur + 8), offset=(5, 6))
+    rotated = block.rotate(2.4, resample=Image.Resampling.BICUBIC, expand=True)
+
+    # 見出しは左寄せ、バッジと下端の間で垂直センタリング。
+    # ブロックが縦長のときはサブ帯が下端で切れないよう上に寄せる(バッジを描く場合は
+    # バッジの下まで、描かない場合は上端近くまで許容)
+    badge_text = "今週のAI速報"
+    badge_visible = badge_text not in main_line
+    text_x = 30
+    text_y = max((thumb_height - rotated.height) // 2 + 14, 96)
+    bottom_limit = thumb_height - 16
+    if text_y + rotated.height > bottom_limit:
+        text_y = max(bottom_limit - rotated.height, 96 if badge_visible else 36)
+    _paste_with_drop_shadow(image, rotated, (text_x, text_y), offset=(8, 10), blur=7)
+
+    # 右下にずんだもん(驚き顔・白フチ)。下端は画面外に落としてバストアップに見せる
+    character_layer = _thumbnail_character_layer(target_height=430)
+    if character_layer is not None:
+        char_x = thumb_width - character_layer.width + 26
+        char_y = thumb_height - character_layer.height + 30
+        _paste_with_drop_shadow(image, character_layer, (char_x, char_y), offset=(10, 12), blur=8)
+
+    # 左上の赤バッジ(シリーズ認知用)。メインと文言が被る場合は省く
+    draw = ImageDraw.Draw(image)
+    if badge_visible:
+        badge_font = _load_font(32, bold=True)
+        bb = badge_font.getbbox(badge_text)
+        bpad_x, bpad_y = 20, 10
+        bx1, by1 = 34, 26
+        bx2 = bx1 + (bb[2] - bb[0]) + bpad_x * 2
+        by2 = by1 + (bb[3] - bb[1]) + bpad_y * 2
+        draw.rounded_rectangle((bx1, by1, bx2, by2), radius=8, fill="#dc2626")
+        draw.text(
+            (bx1 + bpad_x - bb[0], by1 + bpad_y - bb[1]),
+            badge_text,
+            font=badge_font,
+            fill="#ffffff",
+        )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(path)
-
-
-def _save_generated_thumbnail(image: Image.Image, path: Path) -> None:
-    thumb_width, thumb_height = 1280, 720
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _cover_crop(image, thumb_width, thumb_height).convert("RGB").save(path)
 
 
 def _draw_category_icon(
@@ -733,13 +840,9 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     number_w = _text_width(number_font, number_text)
     draw.text(((WIDTH - number_w) / 2, 240), number_text, font=number_font, fill=style.color)
 
-    lines = _wrap_by_pixels(spec.title, title_font, 1500)[:2]
-    y = 560
-    for line in lines:
-        line_w = _text_width(title_font, line)
-        draw.text(((WIDTH - line_w) / 2, y), line, font=title_font, fill="#ffffff")
-        bbox = title_font.getbbox(line or " ")
-        y += bbox[3] - bbox[1] + 18
+    y = _draw_fitted(
+        draw, (210, 540), spec.title, 64, 38, "#ffffff", 1500, 18, max_lines=3, bold=True
+    )
 
     chip_label_w = _text_width(chip_font, style.label)
     chip_w = 16 + 26 + 10 + chip_label_w + 16
@@ -975,7 +1078,7 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
         if spec.headline and spec.headline not in spec.title:
             _draw_fitted(
                 draw, (140, max(395, y_after_benefit + 10)), spec.headline, 24, 20, _DARK_FAINT,
-                content_width, 0, max_lines=1, allow_ellipsis=True,
+                content_width, 0, max_lines=2,
             )
 
         if spec.visual:
@@ -1271,12 +1374,15 @@ def _save_segment_image_assets(segment_images: dict[int, Image.Image], assets_di
 
 
 def _display_label(segment: VideoSegment) -> str:
-    """スライドに出す表示ラベル。title_ja が規約(日本語・短尺)を満たさない限り、
-    フル英語見出しをそのまま主タイトル・区切り・ラインナップ・ランキングに出さない。"""
+    """スライドに出す表示ラベル。
+
+    title_ja が使える場合は長くても採用し、使えない場合も元見出しを省略せずに使う。
+    収まりは描画側の折り返し・フォント縮小で調整する。
+    """
     title_ja = segment.title_ja
-    if title_ja and contains_japanese(title_ja) and len(title_ja) <= TITLE_JA_MAX_CHARS + 4:
+    if title_ja and contains_japanese(title_ja):
         return title_ja
-    return shorten(segment.headline, 24)
+    return segment.headline.strip()
 
 
 def _build_slides(
@@ -1386,12 +1492,12 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     segment_images = await generate_segment_images(draft.segments)
     _save_segment_image_assets(segment_images, work_dir / "assets")
 
-    if theme.thumbnail is None:
+    if theme.thumbnail_bg is None:
         raise ThumbnailGenerationError(
-            "サムネイル画像の生成に失敗しました。IMAGE_GEN_ENABLED と GEMINI_PROJECT、"
+            "サムネイル背景画像の生成に失敗しました。IMAGE_GEN_ENABLED と GEMINI_PROJECT、"
             "画像生成モデルの権限・クォータを確認してください。"
         )
-    _save_generated_thumbnail(theme.thumbnail, work_dir / "thumbnail.png")
+    _render_thumbnail(draft, work_dir / "thumbnail.png", background=theme.thumbnail_bg)
 
     slides = _build_slides(draft, segment_images)
     reading_map = await build_reading_map(
