@@ -7,7 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { CopyButton } from '@/components/CopyButton'
 import { useVideos } from '@/hooks/useVideos'
 import { api } from '@/lib/api'
-import { formatDate } from '@/lib/utils'
+import { formatDateTime } from '@/lib/utils'
 
 function formatDuration(seconds: number): string {
   const total = Math.round(seconds)
@@ -67,7 +67,7 @@ export function VideoListPage() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">{video.title}</p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {formatDate(video.created_at)} / {formatDuration(video.duration_seconds)} /{' '}
+                      {formatDateTime(video.created_at)} / {formatDuration(video.duration_seconds)} /{' '}
                       {video.slide_count}枚 / {video.total_items}件
                     </p>
                     <p className="text-[11px] text-muted-foreground mt-1 font-mono">{video.id}</p>

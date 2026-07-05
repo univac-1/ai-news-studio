@@ -20,6 +20,16 @@ export function formatDate(dateStr: string): string {
   })
 }
 
+export function formatDateTime(dateStr: string): string {
+  return new Date(dateStr).toLocaleString('ja-JP', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function getWeekRangeLabel(items: { published_at: string }[]): string {
   if (items.length === 0) return ''
   const dates = items.map(i => new Date(i.published_at))
