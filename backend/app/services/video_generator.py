@@ -584,6 +584,8 @@ def _character_expression(spec: SlideSpec) -> str:
         return "point"
     if spec.kind == "divider":
         return "point"
+    if spec.kind == "reaction":
+        return "worried" if spec.category == "security" else "happy"
     if spec.kind == "segment":
         if spec.category == "security":
             return "worried"
@@ -620,7 +622,7 @@ def _character_image(spec: SlideSpec) -> Image.Image | None:
 def _character_reserve_width(spec: SlideSpec) -> int:
     if _character_image(spec) is None:
         return 0
-    if spec.kind in {"hook", "opening", "ranking"}:
+    if spec.kind in {"hook", "opening", "ranking", "reaction"}:
         return 420
     if spec.kind == "segment":
         return 260
@@ -983,6 +985,14 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
                 max(520, WIDTH - 200 - character_reserve - body_x), 8, max_lines=bullet_max_lines,
             )
             y += 40
+    elif spec.kind == "reaction":
+        reaction_label_font = _load_font(30, bold=True)
+        reaction_body_font = _load_font(56, bold=True)
+        draw.text((140, 260), "ずんだもんの感想", font=reaction_label_font, fill="#fbbf24")
+        _draw_wrapped(
+            draw, (140, 360), spec.body, reaction_body_font, _DARK_TITLE,
+            content_width, 20, max_lines=3,
+        )
     else:
         _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=4)
         _draw_wrapped(draw, (140, 490), spec.body, body_font, _DARK_BODY, content_width, 18, max_lines=4)
@@ -1327,6 +1337,19 @@ def _build_slides(
                 visual=segment.visual,
                 week_label=draft.week_label,
                 narrator="expert",
+            )
+        )
+
+        slides.append(
+            SlideSpec(
+                kind="reaction",
+                title=f"#{segment.number} {label}",
+                body=segment.reaction_line,
+                narration=segment.reaction_line,
+                number=segment.number,
+                category=segment.category,
+                week_label=draft.week_label,
+                narrator="zundamon",
             )
         )
     slides.append(

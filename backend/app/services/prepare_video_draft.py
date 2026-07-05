@@ -29,6 +29,7 @@ from .generate_weekly_video_plan import (
     template_hook,
     template_intro,
     template_intro_line,
+    template_reaction_line,
 )
 from .polish_narration import _parse_visual
 
@@ -223,13 +224,16 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
         with_rank_reason.append(seg)
     segments = with_rank_reason
 
-    # 7. intro_line補完。空なら決定論的なテンプレートでずんだもんの一言導入を作る
+    # 7. intro_line/reaction_line補完。空なら決定論的テンプレートでずんだもんの発話を作る
     with_intro_line = []
     for seg in segments:
+        updates: dict = {}
         if not seg.intro_line:
-            seg = seg.model_copy(
-                update={"intro_line": template_intro_line(seg.number, seg.title_ja)}
-            )
+            updates["intro_line"] = template_intro_line(seg.number, seg.title_ja)
+        if not seg.reaction_line:
+            updates["reaction_line"] = template_reaction_line(seg.number)
+        if updates:
+            seg = seg.model_copy(update=updates)
         with_intro_line.append(seg)
     segments = with_intro_line
 

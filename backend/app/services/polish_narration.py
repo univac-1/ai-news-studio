@@ -78,9 +78,11 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
         prompt = (
             f"以下のYouTube AIニュース動画ドラフトを、視聴維持率が上がる構成に書き換えてください。\n"
             f"視聴者はビジネスパーソン・開発者。信頼感を保ち、煽りすぎないこと。\n\n"
-            "この動画は2話者(掛け合い)構成です。\n"
+            "この動画は2話者(掛け合い)構成で、各ニュースは"
+            "「ずんだもん(導入)→AI専門家(解説)→ずんだもん(感想)」の3段構成です。\n"
             "・「ずんだもん」: 全体進行役。一人称は「ボク」、語尾に「〜のだ」「〜なのだ」を使う、明るく元気な口調。"
-            "フック・オープニング・各ニュースの一言導入・まとめを担当。\n"
+            "フック・オープニング・各ニュースの一言導入(zundamon_lines)・各ニュースの一言感想(zundamon_reactions)"
+            "・まとめを担当。\n"
             "・「AI専門家」: 各ニュースの詳細解説役。一人称は「私」、です・ます調、時々「〜ですね」を使う、"
             "落ち着いたトーン。各ニュースの詳細解説(narrations)を担当。\n\n"
             f"動画タイトル: {draft.title}\n\n"
@@ -98,8 +100,6 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "です・ます調、時々「〜ですね」を使う、落ち着いたトーン)で書く。"
             "「インパクト:」「アクション:」のようなラベル読み上げをやめて内容を文章に織り込む。"
             "「つまり何が重要か」「誰に影響するか」「視聴者が次に何をすべきか」が明確に伝わる構成にする。"
-            "各ニュースに1回、短いリアクションや感想を入れる"
-            "(例: 「これはかなり便利ですね」「正直ちょっと怖い話です」「開発者にはうれしい変更ですね」)。"
             "ただし事実の改変・誇張・断定的な予測は禁止。"
             "スライドに表示される文言(タイトル・要約・箇条書き)をそのまま復唱しない。"
             "スライドは「見せる」、ナレーションは「補足と実況」と役割分担する。"
@@ -112,7 +112,11 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             f"そのニュースの内容を{ZUNDAMON_LINE_MAX_CHARS}文字以内(目安30〜40字)で一言だけ紹介する。"
             "詳細には踏み込まず、次にAI専門家が詳しく解説する前フリとして機能する短い一文にする。"
             "narrationsと文体・視点が重複しないようにする。\n"
-            "5. segments_meta: 各セグメントについて次の3つ。\n"
+            "5. zundamon_reactions: 各セグメントについて、AI専門家の解説を受けてのずんだもんの一言感想。"
+            "「ずんだもん」の口調(一人称は「ボク」、語尾に「〜のだ」「〜なのだ」、明るく元気)で、"
+            f"{ZUNDAMON_REACTION_MAX_CHARS}文字以内(目安20〜30字)。"
+            "zundamon_linesの内容を繰り返さず、解説内容への驚き・納得・ツッコミなどの反応にする。\n"
+            "6. segments_meta: 各セグメントについて次の3つ。\n"
             f"   - title_ja: スライド表示用の短い日本語タイトル。{TITLE_JA_MAX_CHARS}文字以内。"
             "英語見出しは意味を保って日本語化する。誇張・事実改変は禁止。\n"
             "   - visual: 画面を補足する図解データ。該当する場合のみ。\n"
@@ -122,24 +126,25 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "     どちらにも該当しない場合は null。無理に作らない。\n"
             "   - rank_reason: このニュースがなぜ重要かの一言理由。20文字以内。"
             "例: 政府・規制産業向けAI活用の本格化\n"
-            "6. outro: まとめ原稿。「今週の重要度ランキング」として第1位〜第3位(セグメント1〜3がそのまま順位)を、"
+            "7. outro: まとめ原稿。「今週の重要度ランキング」として第1位〜第3位(セグメント1〜3がそのまま順位)を、"
             "各順位に短い理由を一言添えて振り返る(例: 第1位は、◯◯。政府向けAI活用の本格化です。)。"
             "最後にチャンネル登録・通知オンを促す。220文字以内。\n"
-            "7. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
+            "8. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
             "釣りタイトル(内容と乖離した誇張)は禁止。"
             "日付範囲は入れない。\n"
-            "8. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
+            "9. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
             "各案は1行のみ、3〜8文字、句読点なし。強いパワーワードに絞る。"
             "例: AI激変、覇権交代、無料化、Google反撃、AI危機。\n\n"
             "出力はJSONのみ:\n"
             '{"hook": "...", "intro": "...", "narrations": ["...", ...], '
             '"zundamon_lines": ["...", ...], '
+            '"zundamon_reactions": ["...", ...], '
             '"segments_meta": [{"title_ja": "...", "visual": {"type": "flow", "items": ["...", "...", "..."]}, '
             '"rank_reason": "..."}, ...], '
             '"outro": "...", "title_candidates": ["...", "...", "...", "...", "..."], '
             '"thumbnail_text_candidates": ["...", "...", "...", "...", "..."]}\n'
-            f"narrations、zundamon_lines、segments_metaはセグメントと同数・同順"
+            f"narrations、zundamon_lines、zundamon_reactions、segments_metaはセグメントと同数・同順"
             f"({len(draft.segments)}件)で返してください。\n"
             "説明は不要です。JSONのみ返してください。"
         )
@@ -184,6 +189,16 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             else [None for _ in draft.segments]
         )
 
+        # zundamon_reactions も同様にリスト長を検証し、一致しない場合は
+        # 各セグメントとも下のフォールバック(template_reaction_line)に倒す
+        raw_zundamon_reactions = result.get("zundamon_reactions")
+        zundamon_reactions_list = (
+            raw_zundamon_reactions
+            if isinstance(raw_zundamon_reactions, list)
+            and len(raw_zundamon_reactions) == len(draft.segments)
+            else [None for _ in draft.segments]
+        )
+
         new_segments = []
         for i, seg in enumerate(draft.segments):
             meta = meta_list[i] if isinstance(meta_list[i], dict) else {}
@@ -213,6 +228,14 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
                 and len(raw_zundamon_line.strip()) <= ZUNDAMON_LINE_MAX_CHARS
                 else template_intro_line(seg.number, title_ja)
             )
+            raw_zundamon_reaction = zundamon_reactions_list[i]
+            reaction_line = (
+                raw_zundamon_reaction.strip()
+                if isinstance(raw_zundamon_reaction, str)
+                and raw_zundamon_reaction.strip()
+                and len(raw_zundamon_reaction.strip()) <= ZUNDAMON_REACTION_MAX_CHARS
+                else template_reaction_line(seg.number)
+            )
             new_segments.append(
                 seg.model_copy(
                     update={
@@ -220,6 +243,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
                         "title_ja": title_ja,
                         "slide_title": f"#{seg.number} {title_ja}" if title_ja else seg.slide_title,
                         "intro_line": intro_line,
+                        "reaction_line": reaction_line,
                         "visual": visual,
                         "rank_reason": rank_reason,
                     }
