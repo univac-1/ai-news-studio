@@ -54,6 +54,7 @@ class SlideSpec:
     entries: list[SlideEntry] = field(default_factory=list)
     image: Image.Image | None = None
     week_label: str = ""
+    narrator: str = "zundamon"
 
 
 def _now_id() -> str:
@@ -590,6 +591,8 @@ def _load_character_image(name: str, expression: str) -> Image.Image | None:
 
 
 def _character_image(spec: SlideSpec) -> Image.Image | None:
+    if spec.narrator == "expert":
+        return None
     if not settings.CHARACTER_OVERLAY_ENABLED or not settings.CHARACTER_OVERLAY_NAME:
         return None
     return _load_character_image(settings.CHARACTER_OVERLAY_NAME, _character_expression(spec))
@@ -694,6 +697,25 @@ def _draw_header(draw: ImageDraw.ImageDraw, spec: SlideSpec) -> None:
         _draw_category_chip(draw, badge_left - 20, 38, category_style(spec.category), chip_font)
 
 
+def _draw_speaker_pill(draw: ImageDraw.ImageDraw, spec: SlideSpec) -> None:
+    """illustration/segmentスライド限定の話者ラベル。ヘッダー直下・本文開始前の
+    余白(y≈134)に小さな角丸ピルで話者名を表示する(ずんだもん=緑、AI専門家=青)。"""
+    if spec.kind == "illustration" and spec.narrator == "zundamon":
+        bg, fg, label = "#1f6b3a", "#eafff0", "ずんだもん"
+    elif spec.kind == "segment" and spec.narrator == "expert":
+        bg, fg, label = "#1e4a73", "#eaf6ff", "AI専門家"
+    else:
+        return
+    font = _load_font(22, bold=True)
+    text_w = _text_width(font, label)
+    pad_x = 18
+    pill_h = 32
+    pill_w = text_w + pad_x * 2
+    x1, y1 = 140, 134
+    draw.rounded_rectangle((x1, y1, x1 + pill_w, y1 + pill_h), radius=pill_h // 2, fill=bg)
+    _draw_text_vcentered(draw, x1 + pad_x, y1, pill_h, label, font, fg)
+
+
 def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     # 区切りスライドは背景画像を使わず、濃色フルブリードで場面転換を強調する
     style = category_style(spec.category)
@@ -745,6 +767,7 @@ def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
         scrim_draw.line(((0, y), (WIDTH, y)), fill=(0, 0, 0, int(200 * ratio)))
     image = Image.alpha_composite(image, scrim)
     draw = ImageDraw.Draw(image)
+    _draw_speaker_pill(draw, spec)
 
     number_text = f"#{spec.number}"
     label = spec.title.split(" ", 1)[1] if " " in spec.title else spec.title
@@ -833,6 +856,7 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
     meta_font = _load_font(28)
 
     _draw_header(draw, spec)
+    _draw_speaker_pill(draw, spec)
 
     if spec.kind == "segment" and spec.category:
         accent = category_style(spec.category).color
@@ -993,6 +1017,7 @@ async def _synthesize_voice(
     text: str,
     path: Path,
     reading_map: dict[str, str] | None = None,
+    speaker_id: int = settings.VOICEVOX_SPEAKER_ID,
 ) -> list[tuple[str, float]]:
     path.parent.mkdir(parents=True, exist_ok=True)
     # チャンク分割は原文に対して行い、返り値のtextも原文を保つ(字幕は英語表記のまま)。
@@ -1010,7 +1035,7 @@ async def _synthesize_voice(
                 "/audio_query",
                 params={
                     "text": to_voice_text(chunk, reading_map),
-                    "speaker": settings.VOICEVOX_SPEAKER_ID,
+                    "speaker": speaker_id,
                 },
             )
             query_res.raise_for_status()
@@ -1019,7 +1044,7 @@ async def _synthesize_voice(
             query_json["postPhonemeLength"] = settings.VOICEVOX_POST_PHONEME_LENGTH
             audio_res = await client.post(
                 "/synthesis",
-                params={"speaker": settings.VOICEVOX_SPEAKER_ID},
+                params={"speaker": speaker_id},
                 json=query_json,
             )
             audio_res.raise_for_status()
@@ -1120,6 +1145,16 @@ def _format_srt_time(seconds: float) -> str:
     secs = millis // 1000
     millis %= 1000
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+
+def _ass_bgr(hex_color: str) -> str:
+    """#RRGGBB を ASS字幕形式の &HBBGGRR& に変換する。"""
+    return f"&H{hex_color[5:7]}{hex_color[3:5]}{hex_color[1:3]}&"
+
+
+# 話者ごとの字幕色(淡色。ずんだもん=淡緑、AI専門家=淡青)
+_SUBTITLE_COLOR_ZUNDAMON = "#8BE58B"
+_SUBTITLE_COLOR_EXPERT = "#8BC7F0"
 
 
 _SUBTITLE_BREAK_CHARS = "、。！？!?　 "
@@ -1261,6 +1296,7 @@ def _build_slides(
                 body=draft.hook,
                 narration=draft.hook,
                 week_label=draft.week_label,
+                narrator="zundamon",
             )
         )
     slides.append(
@@ -1271,51 +1307,35 @@ def _build_slides(
             narration=draft.intro,
             entries=entries,
             week_label=draft.week_label,
+            narrator="zundamon",
         )
     )
     for segment in draft.segments:
         label = _display_label(segment)
 
-        # 区切り機能はイラストスライド(ナレーション先頭1文つき)に統合する。
-        # 先頭1文を切り出した後の本文が20字以上残る場合のみイラストを挿入し、
-        # 分割できない場合だけ従来の無音区切りにフォールバックする。
-        segment_narration = segment.narration
-        sentence_end = segment_narration.find("。")
-        rest_narration = (
-            segment_narration[sentence_end + 1 :].strip() if sentence_end != -1 else ""
+        # イラストスライドはずんだもんの一言導入(intro_line)を読み上げる区切り兼用スライド。
+        # intro_lineは保証層(prepare_draft_for_video)により常に非空なので、画像の有無に
+        # かかわらず常に挿入する(画像がない場合はダーク背景フォールバックで描画される)。
+        slides.append(
+            SlideSpec(
+                kind="illustration",
+                title=f"#{segment.number} {label}",
+                body="",
+                narration=segment.intro_line,
+                number=segment.number,
+                category=segment.category,
+                image=segment_images.get(segment.number),
+                week_label=draft.week_label,
+                narrator="zundamon",
+            )
         )
-        if sentence_end != -1 and len(rest_narration) >= 20:
-            slides.append(
-                SlideSpec(
-                    kind="illustration",
-                    title=f"#{segment.number} {label}",
-                    body="",
-                    narration=segment_narration[: sentence_end + 1],
-                    number=segment.number,
-                    category=segment.category,
-                    image=segment_images.get(segment.number),
-                    week_label=draft.week_label,
-                )
-            )
-            segment_narration = rest_narration
-        else:
-            slides.append(
-                SlideSpec(
-                    kind="divider",
-                    title=label,
-                    body="",
-                    narration="",
-                    number=segment.number,
-                    category=segment.category,
-                )
-            )
 
         slides.append(
             SlideSpec(
                 kind="segment",
                 title=f"#{segment.number} {label}",
                 body=segment.summary,
-                narration=segment_narration,
+                narration=segment.narration,
                 source=segment.source,
                 impact=segment.impact,
                 action=segment.action,
@@ -1324,6 +1344,7 @@ def _build_slides(
                 headline=segment.headline,
                 visual=segment.visual,
                 week_label=draft.week_label,
+                narrator="expert",
             )
         )
     slides.append(
@@ -1334,6 +1355,7 @@ def _build_slides(
             narration=draft.outro,
             entries=entries,
             week_label=draft.week_label,
+            narrator="zundamon",
         )
     )
     return slides
@@ -1388,7 +1410,14 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             part_duration = DIVIDER_DURATION
             fade_duration = 0.3
         else:
-            chunk_durations = await _synthesize_voice(slide.narration, audio_path, reading_map)
+            speaker_id = (
+                settings.VOICEVOX_SPEAKER_ID_EXPERT
+                if slide.narrator == "expert"
+                else settings.VOICEVOX_SPEAKER_ID
+            )
+            chunk_durations = await _synthesize_voice(
+                slide.narration, audio_path, reading_map, speaker_id
+            )
             if voice_wav_params is None:
                 voice_wav_params = _wav_params(audio_path)
             audio_duration = max(sum(dur for _, dur in chunk_durations), 1.0)
@@ -1402,10 +1431,13 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         vf_filters = ["setsar=1,fps=30"]
         if chunk_durations:
             _write_part_srt(chunk_durations, part_srt_path)
+            subtitle_color = _ass_bgr(
+                _SUBTITLE_COLOR_EXPERT if slide.narrator == "expert" else _SUBTITLE_COLOR_ZUNDAMON
+            )
             vf_filters.append(
                 f"subtitles={part_srt_rel}"
                 f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
-                f",BackColour=&H60000000,MarginV=18,MarginL=30,MarginR=30'"
+                f",BackColour=&H60000000,MarginV=18,MarginL=30,MarginR=30,PrimaryColour={subtitle_color}'"
             )
         vf_filters.append(f"fade=t=in:st=0:d={fade_duration}")
         vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")

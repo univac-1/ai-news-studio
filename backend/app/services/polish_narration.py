@@ -16,7 +16,12 @@ from .generate_weekly_video_plan import (
     TITLE_JA_MAX_CHARS,
     contains_japanese,
     template_hook,
+    template_intro_line,
 )
+
+# ずんだもんの一言導入(intro_line)は30〜40字程度を目安にするが、
+# Gemini出力のブレを許容するため採用判定はやや広めの上限にする
+ZUNDAMON_LINE_MAX_CHARS = 40
 
 
 def _parse_visual(raw: object) -> SegmentVisual | None:
@@ -69,6 +74,11 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
         prompt = (
             f"以下のYouTube AIニュース動画ドラフトを、視聴維持率が上がる構成に書き換えてください。\n"
             f"視聴者はビジネスパーソン・開発者。信頼感を保ち、煽りすぎないこと。\n\n"
+            "この動画は2話者(掛け合い)構成です。\n"
+            "・「ずんだもん」: 全体進行役。一人称は「ボク」、語尾に「〜のだ」「〜なのだ」を使う、明るく元気な口調。"
+            "フック・オープニング・各ニュースの一言導入・まとめを担当。\n"
+            "・「AI専門家」: 各ニュースの詳細解説役。一人称は「私」、です・ます調、時々「〜ですね」を使う、"
+            "落ち着いたトーン。各ニュースの詳細解説(narrations)を担当。\n\n"
             f"動画タイトル: {draft.title}\n\n"
             f"【現在のフック】\n{draft.hook}\n\n"
             f"【現在のオープニング】\n{draft.intro}\n\n"
@@ -80,13 +90,12 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             f"2. intro: 5〜20秒のオープニング原稿。前半で「この動画を見る価値(何本を何分で把握できるか)」を提示し、"
             f"後半は「ラインナップは画面のとおりです。それでは1本目からいきましょう」のように"
             f"テンポよく本編へつなぐ。{OPENING_MAX_CHARS}文字以内。ニュースタイトルの列挙はしない(画面に一覧が出る)。\n"
-            "3. narrations: 各セグメントのナレーション。"
-            "明るく親しみやすいニュースキャスターの一人称実況として、丁寧語(です・ます)ベースの"
-            "自然な話し言葉で書く。"
+            "3. narrations: 各セグメントの詳細解説ナレーション。「AI専門家」の口調(一人称は「私」、"
+            "です・ます調、時々「〜ですね」を使う、落ち着いたトーン)で書く。"
             "「インパクト:」「アクション:」のようなラベル読み上げをやめて内容を文章に織り込む。"
             "「つまり何が重要か」「誰に影響するか」「視聴者が次に何をすべきか」が明確に伝わる構成にする。"
             "各ニュースに1回、短いリアクションや感想を入れる"
-            "(例: 「これはかなり便利です」「正直ちょっと怖い話です」「開発者にはうれしい変更です」)。"
+            "(例: 「これはかなり便利ですね」「正直ちょっと怖い話です」「開発者にはうれしい変更ですね」)。"
             "ただし事実の改変・誇張・断定的な予測は禁止。"
             "スライドに表示される文言(タイトル・要約・箇条書き)をそのまま復唱しない。"
             "スライドは「見せる」、ナレーションは「補足と実況」と役割分担する。"
@@ -94,7 +103,12 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             f"なお、要約は{SUMMARY_MAX_CHARS}文字以内、インパクトは{IMPACT_MAX_CHARS}文字以内、"
             f"アクションは{ACTION_MAX_CHARS}文字以内を目安に簡潔にまとめられている前提のため、"
             "織り込む際もこの分量感を保ち、冗長に膨らませないこと。\n"
-            "4. segments_meta: 各セグメントについて次の3つ。\n"
+            "4. zundamon_lines: 各セグメントの一言導入。「ずんだもん」の口調"
+            "(一人称は「ボク」、語尾に「〜のだ」「〜なのだ」、明るく元気)で、"
+            f"そのニュースの内容を{ZUNDAMON_LINE_MAX_CHARS}文字以内(目安30〜40字)で一言だけ紹介する。"
+            "詳細には踏み込まず、次にAI専門家が詳しく解説する前フリとして機能する短い一文にする。"
+            "narrationsと文体・視点が重複しないようにする。\n"
+            "5. segments_meta: 各セグメントについて次の3つ。\n"
             f"   - title_ja: スライド表示用の短い日本語タイトル。{TITLE_JA_MAX_CHARS}文字以内。"
             "英語見出しは意味を保って日本語化する。誇張・事実改変は禁止。\n"
             "   - visual: 画面を補足する図解データ。該当する場合のみ。\n"
@@ -104,22 +118,24 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "     どちらにも該当しない場合は null。無理に作らない。\n"
             "   - rank_reason: このニュースがなぜ重要かの一言理由。20文字以内。"
             "例: 政府・規制産業向けAI活用の本格化\n"
-            "5. outro: まとめ原稿。「今週の重要度ランキング」として第1位〜第3位(セグメント1〜3がそのまま順位)を、"
+            "6. outro: まとめ原稿。「今週の重要度ランキング」として第1位〜第3位(セグメント1〜3がそのまま順位)を、"
             "各順位に短い理由を一言添えて振り返る(例: 第1位は、◯◯。政府向けAI活用の本格化です。)。"
             "最後にチャンネル登録・通知オンを促す。220文字以内。\n"
-            "6. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
+            "7. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
             "釣りタイトル(内容と乖離した誇張)は禁止。\n"
-            "7. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
+            "8. thumbnail_text_candidates: サムネイル文言案を5つ。Nano Banana Proで画像内に直接描画するため、"
             "各案は1行のみ、3〜8文字、句読点なし。強いパワーワードに絞る。"
             "例: AI激変、覇権交代、無料化、Google反撃、AI危機。\n\n"
             "出力はJSONのみ:\n"
             '{"hook": "...", "intro": "...", "narrations": ["...", ...], '
+            '"zundamon_lines": ["...", ...], '
             '"segments_meta": [{"title_ja": "...", "visual": {"type": "flow", "items": ["...", "...", "..."]}, '
             '"rank_reason": "..."}, ...], '
             '"outro": "...", "title_candidates": ["...", "...", "...", "...", "..."], '
             '"thumbnail_text_candidates": ["...", "...", "...", "...", "..."]}\n'
-            f"narrationsとsegments_metaはセグメントと同数・同順({len(draft.segments)}件)で返してください。\n"
+            f"narrations、zundamon_lines、segments_metaはセグメントと同数・同順"
+            f"({len(draft.segments)}件)で返してください。\n"
             "説明は不要です。JSONのみ返してください。"
         )
 
@@ -153,6 +169,16 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             else [{} for _ in draft.segments]
         )
 
+        # zundamon_lines も他のフィールドと同様にリスト長を検証し、一致しない場合は
+        # 各セグメントとも下のフォールバック(template_intro_line)に倒す
+        raw_zundamon_lines = result.get("zundamon_lines")
+        zundamon_lines_list = (
+            raw_zundamon_lines
+            if isinstance(raw_zundamon_lines, list)
+            and len(raw_zundamon_lines) == len(draft.segments)
+            else [None for _ in draft.segments]
+        )
+
         new_segments = []
         for i, seg in enumerate(draft.segments):
             meta = meta_list[i] if isinstance(meta_list[i], dict) else {}
@@ -174,12 +200,21 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
                 and len(raw_rank_reason.strip()) <= 26
                 else seg.rank_reason
             )
+            raw_zundamon_line = zundamon_lines_list[i]
+            intro_line = (
+                raw_zundamon_line.strip()
+                if isinstance(raw_zundamon_line, str)
+                and raw_zundamon_line.strip()
+                and len(raw_zundamon_line.strip()) <= ZUNDAMON_LINE_MAX_CHARS
+                else template_intro_line(seg.number, title_ja)
+            )
             new_segments.append(
                 seg.model_copy(
                     update={
                         "narration": narrations[i],
                         "title_ja": title_ja,
                         "slide_title": f"#{seg.number} {title_ja}" if title_ja else seg.slide_title,
+                        "intro_line": intro_line,
                         "visual": visual,
                         "rank_reason": rank_reason,
                     }

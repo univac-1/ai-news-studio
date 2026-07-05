@@ -39,6 +39,10 @@ def template_intro(count: int) -> str:
     )
 
 
+def template_intro_line(number: int, title_ja: str) -> str:
+    return f"{number}本目は、{title_ja}なのだ！"
+
+
 def _week_range_label(items: list[NewsItem]) -> str:
     if not items:
         return ""
@@ -96,8 +100,8 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
     segments: list[VideoSegment] = []
     for i, item in enumerate(items, 1):
         title_ja = fallback_title_ja(item)
+        intro_line = template_intro_line(i, title_ja)
         narration = (
-            f"{i}本目は、{item.title}。\n"
             f"{item.summary}\n"
             f"ポイントは、{item.impact}\n"
             f"次のアクションとしては、{item.action}"
@@ -113,6 +117,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
                 action=item.action,
                 slide_title=f"#{i} {title_ja}",
                 narration=narration,
+                intro_line=intro_line,
                 source=item.source,
                 title_ja=title_ja,
                 category=categorize_news(item),

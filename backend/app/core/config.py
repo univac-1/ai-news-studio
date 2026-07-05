@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     STATIC_FILES_DIR: str = ""
     VOICEVOX_BASE_URL: str = "http://localhost:50021"
     VOICEVOX_SPEAKER_ID: int = 3
+    VOICEVOX_SPEAKER_ID_EXPERT: int = 2
     VOICEVOX_SPEED_SCALE: float = 1.1
     VOICEVOX_POST_PHONEME_LENGTH: float = 0.3
     GEMINI_PROJECT: str = ""
