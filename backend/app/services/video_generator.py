@@ -21,6 +21,7 @@ from .kana_reading import build_reading_map, to_voice_text
 BASE_DIR = Path(__file__).parent.parent.parent
 GENERATED_DIR = BASE_DIR / "data" / "generated"
 CHARACTER_ASSETS_DIR = BASE_DIR / "app" / "assets" / "characters"
+BGM_ASSETS_DIR = BASE_DIR / "app" / "assets" / "bgm"
 WIDTH = 1920
 HEIGHT = 1080
 # ニュース間の区切りスライドは無音・固定尺(テンポ優先で2秒未満)
@@ -568,6 +569,30 @@ def _render_thumbnail(
     if character_layer is not None:
         char_x = thumb_width - character_layer.width + 26
         char_y = thumb_height - character_layer.height + 30
+
+        # 生成背景の明るさに依存せずキャラクターと見出しのコントラストを保つため、
+        # キャラクター背後にも柔らかい楕円形の暗めスクリムを重ねる。ハードエッジな
+        # 図形に見えないよう、中心alpha≒90から端に向けてフェードさせ、境界を
+        # GaussianBlurでぼかす
+        char_scrim_mask = Image.new("L", (thumb_width, thumb_height), 0)
+        ellipse_cx = char_x + character_layer.width // 2
+        ellipse_cy = char_y + round(character_layer.height * 0.6)
+        ellipse_rx = round(character_layer.width * 0.75)
+        ellipse_ry = round(character_layer.height * 0.7)
+        ImageDraw.Draw(char_scrim_mask).ellipse(
+            (
+                ellipse_cx - ellipse_rx,
+                ellipse_cy - ellipse_ry,
+                ellipse_cx + ellipse_rx,
+                ellipse_cy + ellipse_ry,
+            ),
+            fill=90,
+        )
+        char_scrim_mask = char_scrim_mask.filter(ImageFilter.GaussianBlur(60))
+        char_scrim = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 255))
+        char_scrim.putalpha(char_scrim_mask)
+        image = Image.alpha_composite(image, char_scrim)
+
         _paste_with_drop_shadow(image, character_layer, (char_x, char_y), offset=(10, 12), blur=8)
 
     # 左上の赤バッジ(シリーズ認知用)。メインと文言が被る場合は省く
@@ -937,7 +962,14 @@ def _render_visual_panel(
             y += 40
 
 
-def _render_slide(spec: SlideSpec, path: Path) -> None:
+def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
+    """スライドを1枚描画してpathに保存する。
+
+    bullet_countはsegmentスライドの箇条書き(何が変わるか/次にやること)を
+    何件描くかの段階表示用パラメータ。他の要素(タイトル・ベネフィット・
+    英語原題・図解・巨大番号・出典・キャラ)は全ステージで同一にし、
+    フレーム切り替え時のちらつきを防ぐ。
+    """
     if spec.kind == "divider":
         _render_divider_slide(spec, path)
         return
@@ -1090,7 +1122,8 @@ def _render_slide(spec: SlideSpec, path: Path) -> None:
         bullet_label_font = _load_font(26, bold=True)
         bullet_max_lines = 1 if spec.visual else 2
         y = 665 if spec.visual else 500
-        for bullet_label, bullet_body in (("何が変わるか", spec.impact), ("次にやること", spec.action)):
+        bullets = (("何が変わるか", spec.impact), ("次にやること", spec.action))[:bullet_count]
+        for bullet_label, bullet_body in bullets:
             # アクセント色の正方形ビュレット + ラベル + 同じ行から始まる本文
             draw.rectangle((140, y + 11, 152, y + 23), fill=accent)
             draw.text((164, y + 2), bullet_label, font=bullet_label_font, fill="#93c5fd")
@@ -1120,6 +1153,52 @@ def _render_reaction_variant(spec: SlideSpec, base_path: Path, reaction_path: Pa
     image = _paste_character_overlay(image, replace(spec, narrator="zundamon"))
     reaction_path.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(reaction_path)
+
+
+# 解説スライドの段階表示を有効にする最小ナレーション秒数。これ未満は
+# 従来どおり箇条書き全表示の1枚絵のまま通す
+STAGE_REVEAL_MIN_DURATION = 12.0
+
+
+def _build_frame_timeline(
+    frames: list[tuple[Path, float]], total_duration: float, min_duration: float = 0.1
+) -> list[tuple[Path, float]]:
+    """(画像パス, 表示開始時刻)のリストを、表示尺が min_duration 未満にならない
+    よう間引いたうえで [(画像パス, 表示尺)] に変換する。
+
+    reactionフレーム(expert_duration時点でキャラ出現)も段階表示フレームも、
+    このヘルパーを通して最終的なタイムラインに変換する共通の仕組みとする。
+    """
+    cleaned: list[tuple[Path, float]] = []
+    for path, start in frames:
+        start = min(max(start, 0.0), total_duration)
+        if cleaned and start - cleaned[-1][1] < min_duration:
+            continue  # 直前のフレームと十分な間隔が無い場合はこのフレームを省く
+        cleaned.append((path, start))
+    while len(cleaned) > 1 and total_duration - cleaned[-1][1] < min_duration:
+        cleaned.pop()
+
+    result: list[tuple[Path, float]] = []
+    for i, (path, start) in enumerate(cleaned):
+        end = cleaned[i + 1][1] if i + 1 < len(cleaned) else total_duration
+        result.append((path, end - start))
+    return result
+
+
+def _build_multi_frame_filter(frame_durations: list[float]) -> str:
+    """各フレームの表示尺のリストから、静止画入力([0:v], [1:v], ...)を
+    trim + concat でつなぎ [vcat] にまとめる filter_complex 文字列を組み立てる。
+
+    入力ストリームは len(frame_durations) 個の -loop 1 画像入力が
+    [0:v] から順に渡されている前提。
+    """
+    parts = [
+        f"[{i}:v]trim=duration={dur:.3f},setpts=PTS-STARTPTS[v{i}]"
+        for i, dur in enumerate(frame_durations)
+    ]
+    concat_inputs = "".join(f"[v{i}]" for i in range(len(frame_durations)))
+    parts.append(f"{concat_inputs}concat=n={len(frame_durations)}:v=1:a=0[vcat]")
+    return ";".join(parts)
 
 
 async def _synthesize_voice(
@@ -1186,6 +1265,79 @@ def _run_ffmpeg(args: list[str], cwd: Path | None = None) -> str:
 
 def _loudnorm_target() -> str:
     return f"loudnorm=I={LOUDNESS_I:g}:TP={LOUDNESS_TP:g}:LRA={LOUDNESS_LRA:g}"
+
+
+def _select_bgm_file() -> Path | None:
+    """BGM_FILE指定があればそのファイルを、未指定ならbgm/配下の音声ファイルを
+    ソートして先頭の1つを使う。見つからない場合はNone(BGMなしで続行)。"""
+    if settings.BGM_FILE:
+        candidate = BGM_ASSETS_DIR / settings.BGM_FILE
+        return candidate if candidate.exists() else None
+    if not BGM_ASSETS_DIR.exists():
+        return None
+    files = sorted(
+        (
+            path
+            for path in BGM_ASSETS_DIR.iterdir()
+            if path.is_file() and path.suffix.lower() in (".mp3", ".wav", ".m4a")
+        ),
+        key=lambda path: path.name,
+    )
+    return files[0] if files else None
+
+
+def _mix_bgm(work_dir: Path, video_name: str, total_duration: float) -> None:
+    """concat直後の動画にナレーションより十分低い音量でBGMを重ねる。
+
+    BGM無効・ファイル未検出・ffmpeg失敗時は例外にせずBGMなしのまま続行する。
+    最終ラウドネス正規化(_normalize_final_loudness)より前に呼ぶことで、
+    BGM込みの音声に対して目標ラウドネスが適用されるようにする。
+    """
+    if not settings.BGM_ENABLED:
+        return
+    bgm_path = _select_bgm_file()
+    if bgm_path is None:
+        return
+    try:
+        fade_start = max(total_duration - 2.0, 0.0)
+        filter_complex = (
+            f"[1:a]volume={settings.BGM_VOLUME_DB:g}dB,"
+            f"afade=t=out:st={fade_start:.3f}:d=2[bgm];"
+            f"[0:a][bgm]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
+        mixed_name = "video_bgm.mp4"
+        _run_ffmpeg(
+            [
+                "-i",
+                video_name,
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(bgm_path.resolve()),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-ar",
+                "48000",
+                "-ac",
+                "1",
+                "-shortest",
+                mixed_name,
+            ],
+            cwd=work_dir,
+        )
+        (work_dir / mixed_name).replace(work_dir / video_name)
+    except Exception:
+        return
 
 
 def _normalize_final_loudness(work_dir: Path, video_name: str) -> None:
@@ -1267,6 +1419,66 @@ def _subtitle_color(narrator: str) -> str:
 
 
 _SUBTITLE_BREAK_CHARS = "、。！？!?　 "
+# 禁則: 行頭に来てはいけない文字(閉じ括弧・句読点・終端記号・小書き文字/長音)
+_KINSOKU_LINE_START_FORBIDDEN = "」』）)]、。，．！？!?…ーゃゅょぁぃぅぇぉっャュョァィゥェォッ"
+# 禁則: 行末に来てはいけない文字(開き括弧)
+_KINSOKU_LINE_END_FORBIDDEN = "「『([（"
+# カタカナの連なり(「セキュリティ」等の外来語)の内部分割を避けるための判定。
+# 長音符ーは行頭禁則で既に弾かれるが、連なり判定にも含めて語の一体性を優先する
+_KATAKANA_RE = re.compile(r"[ァ-ヶー]")
+
+
+def _is_safe_subtitle_split(text: str, i: int) -> bool:
+    """位置i(前半=text[:i]、後半=text[i:])での分割が禁則に触れないか判定する。
+
+    英数字の連なり(モデル名・バージョン番号など、例: "GovCloud" "2.5" "GPT-4o")の
+    内部、後半が閉じ括弧・句読点・小書き文字等で始まる行頭禁則、前半が開き括弧で
+    終わる行末禁則のいずれにも該当しなければ安全とみなす。
+    """
+    if i <= 0 or i >= len(text):
+        return False
+    prev_char, next_char = text[i - 1], text[i]
+    if _ASCII_RE.match(prev_char) and _ASCII_RE.match(next_char):
+        return False
+    if next_char in _KINSOKU_LINE_START_FORBIDDEN:
+        return False
+    if prev_char in _KINSOKU_LINE_END_FORBIDDEN:
+        return False
+    return True
+
+
+def _find_safe_split(text: str, ideal: int, lo: int, hi: int) -> int | None:
+    """[lo, hi]の範囲内で禁則を満たす分割位置のうちidealに最も近いものを返す。
+
+    句読点・終端記号・空白の直後(優先度1)を最優先し、次にカタカナ語の内部を
+    避けた文字間(優先度2)、それも無ければ禁則さえ満たせば良い任意の文字間
+    (優先度3)を採用する。_split_subtitle_cuesと_wrap_cue_linesの両方から使う
+    共通ヘルパー。範囲内に安全な位置が無ければNoneを返し、呼び出し側で
+    強制分割にフォールバックさせる。
+    """
+    lo = max(lo, 1)
+    hi = min(hi, len(text) - 1)
+    if lo > hi:
+        return None
+
+    def best(prefer_break: bool, avoid_katakana_run: bool) -> int | None:
+        found = None
+        for i in range(lo, hi + 1):
+            if prefer_break and text[i - 1] not in _SUBTITLE_BREAK_CHARS:
+                continue
+            if avoid_katakana_run and _KATAKANA_RE.match(text[i - 1]) and _KATAKANA_RE.match(text[i]):
+                continue
+            if not _is_safe_subtitle_split(text, i):
+                continue
+            if found is None or abs(i - ideal) < abs(found - ideal):
+                found = i
+        return found
+
+    for prefer_break, avoid_katakana_run in ((True, False), (False, True), (False, False)):
+        found = best(prefer_break, avoid_katakana_run)
+        if found is not None:
+            return found
+    return None
 
 
 def _split_subtitle_cues(
@@ -1283,14 +1495,28 @@ def _split_subtitle_cues(
     cues: list[str] = []
     remaining = normalized
     while len(remaining) > max_cue_chars:
-        window = remaining[:max_cue_chars]
-        split_at = max(window.rfind(ch) for ch in _SUBTITLE_BREAK_CHARS)
-        if split_at < max_cue_chars // 2:
-            split_at = max_cue_chars - 1
-        cues.append(remaining[: split_at + 1].strip())
-        remaining = remaining[split_at + 1 :].strip()
+        # 禁則を守れる位置をmax_cue_chars近傍(+6文字まで延長可)で探し、
+        # 見つからない場合のみ現状どおりの強制分割にフォールバックする
+        split_at = _find_safe_split(
+            remaining, ideal=max_cue_chars, lo=max_cue_chars // 2, hi=max_cue_chars + 6
+        )
+        if split_at is None:
+            split_at = max_cue_chars
+        cues.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
     if remaining:
         cues.append(remaining)
+
+    # 末尾が「です。」のような数文字だけの孤立キューになった場合は、2行に
+    # 収まる範囲(max_line_chars+6を2行分)で直前のキューへ併合する
+    if (
+        len(cues) >= 2
+        and len(cues[-1]) < 6
+        and len(cues[-2]) + len(cues[-1]) + 1 <= (max_line_chars + 6) * max_lines
+    ):
+        tail = cues.pop()
+        joiner = " " if _ASCII_RE.match(cues[-1][-1]) and _ASCII_RE.match(tail[0]) else ""
+        cues[-1] = cues[-1] + joiner + tail
 
     total_chars = sum(len(cue) for cue in cues) or 1
     return [(cue, duration * len(cue) / total_chars) for cue in cues]
@@ -1300,13 +1526,22 @@ def _wrap_cue_lines(text: str, max_line_chars: int) -> list[str]:
     # textwrap は英単語・ハイフン優先で折って3行以上になり得るため、2行保証の自前分割を使う
     if len(text) <= max_line_chars:
         return [text]
-    min_split = len(text) - max_line_chars
-    window = text[:max_line_chars]
-    split_at = max(window.rfind(ch) for ch in _SUBTITLE_BREAK_CHARS)
-    if split_at + 1 < min_split:
-        split_at = max_line_chars - 1
-    first = text[: split_at + 1].rstrip()
-    second = text[split_at + 1 :].strip()
+
+    max_extend = 6
+    # 1行目・2行目のどちらも max_line_chars+max_extend に収まる範囲でのみ
+    # 分割位置を探す(2行保証を維持したまま禁則を優先するため)。
+    # idealは中央付近にして2行の長さを揃え、「〜されまし / た。」のような
+    # 数文字だけの2行目を避ける
+    lo = max(1, len(text) - (max_line_chars + max_extend))
+    hi = min(len(text) - 1, max_line_chars + max_extend)
+    ideal = min(max((len(text) + 1) // 2, lo), hi)
+    split_at = _find_safe_split(text, ideal=ideal, lo=lo, hi=hi)
+    if split_at is None:
+        # 強制分割でも2行がそれぞれ max_line_chars+max_extend に収まるよう
+        # 中央寄りの位置で切る
+        split_at = ideal
+    first = text[:split_at].rstrip()
+    second = text[split_at:].strip()
     return [first, second] if second else [first]
 
 
@@ -1592,24 +1827,33 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")
         vf = ",".join(vf_filters)
 
+        # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
+        # segmentかつナレーションが十分長い場合は箇条書きを0→1→2件の3段階で
+        # 出し、reactionフレーム(=解説音声終わりでキャラが出現する最終フレーム)が
+        # あれば同じ仕組みでリストの末尾に追加する。
+        frames: list[tuple[Path, float]] = [(slide_path, 0.0)]
+        if slide.kind == "segment" and expert_duration >= STAGE_REVEAL_MIN_DURATION:
+            stage0_path = slides_dir / f"slide_{index:03}_b0.png"
+            stage1_path = slides_dir / f"slide_{index:03}_b1.png"
+            _render_slide(slide, stage0_path, bullet_count=0)
+            _render_slide(slide, stage1_path, bullet_count=1)
+            frames = [
+                (stage0_path, 0.0),
+                (stage1_path, expert_duration * 0.45),
+                (slide_path, expert_duration * 0.70),
+            ]
         if show_reaction_character:
-            # 感想が始まる瞬間(=解説音声の終わり)で解説フレーム→感想フレームに切り替える
-            switch_at = min(max(expert_duration, 0.1), part_duration - 0.1)
-            filter_complex = (
-                f"[0:v]trim=duration={switch_at:.3f},setpts=PTS-STARTPTS[v0];"
-                f"[1:v]trim=duration={(part_duration - switch_at):.3f},setpts=PTS-STARTPTS[v1];"
-                f"[v0][v1]concat=n=2:v=1:a=0[vcat];"
-                f"[vcat]{vf}[vout]"
-            )
-            args = [
-                "-loop",
-                "1",
-                "-i",
-                f"slides/slide_{index:03}.png",
-                "-loop",
-                "1",
-                "-i",
-                f"slides/slide_{index:03}_reaction.png",
+            frames.append((reaction_slide_path, expert_duration))
+
+        frame_specs = _build_frame_timeline(frames, part_duration)
+
+        if len(frame_specs) > 1:
+            filter_complex = _build_multi_frame_filter([duration for _, duration in frame_specs])
+            filter_complex += f";[vcat]{vf}[vout]"
+            args = []
+            for frame_path, _ in frame_specs:
+                args += ["-loop", "1", "-i", f"slides/{frame_path.name}"]
+            args += [
                 "-i",
                 f"audio/audio_{index:03}.wav",
                 "-filter_complex",
@@ -1617,14 +1861,14 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
                 "-map",
                 "[vout]",
                 "-map",
-                "2:a",
+                f"{len(frame_specs)}:a",
             ]
         else:
             args = [
                 "-loop",
                 "1",
                 "-i",
-                f"slides/slide_{index:03}.png",
+                f"slides/{frame_specs[0][0].name}",
                 "-i",
                 f"audio/audio_{index:03}.wav",
                 "-vf",
@@ -1681,6 +1925,9 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         ],
         cwd=work_dir,
     )
+
+    # ナレーション音声に低音量BGMを重ねる(ラウドネス正規化の前に行う)
+    _mix_bgm(work_dir, "video.mp4", sum(padded_durations))
 
     # YouTube向けラウドネス(-16 LUFS / TP -1.5 dBTP)を動画全体で保証する
     _normalize_final_loudness(work_dir, "video.mp4")
