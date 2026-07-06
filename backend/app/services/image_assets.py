@@ -38,15 +38,18 @@ _THUMBNAIL_BG_PROMPT = (
     "Composition:\n"
     "Hero subject large in the upper-right two-thirds of the frame, slightly angled, "
     "dynamic diagonal energy. The left 40% of the frame and the bottom-right corner "
-    "must stay much darker and almost empty (clean soft dark gradient) because a bold "
-    "headline and a mascot character will be overlaid there later.\n\n"
+    "must fade smoothly and gradually into darkness (a soft, continuous dark gradient "
+    "with no visible edge) because a bold headline and a mascot character will be "
+    "overlaid there later. The darkening must blend seamlessly into the surrounding "
+    "scene — never a distinct shape.\n\n"
     "Style and lighting:\n"
     "Photoreal 3D render, breaking-news urgency, strong rim light, vivid electric blue, "
     "cyan and orange accent lighting on a very dark navy background, high contrast, "
     "sharp focus on the subject, subtle glow particles and light streaks, premium and "
     "modern, readable at smartphone size.\n\n"
     "Strictly forbidden: any text, letters, numbers, typography, captions, subtitles, "
-    "logos, watermarks, user interface, screenshots, people, faces, cartoon characters."
+    "logos, watermarks, user interface, screenshots, people, faces, cartoon characters, "
+    "solid black rectangles, hard-edged boxes or panels, borders, frames, letterboxing."
 )
 
 

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     IMAGE_GEN_LOCATION: str = "global"
     CHARACTER_OVERLAY_ENABLED: bool = True
     CHARACTER_OVERLAY_NAME: str = "zundamon"
+    BGM_ENABLED: bool = True
+    # 空なら backend/app/assets/bgm/ 配下の *.mp3/*.wav/*.m4a をソートして先頭を自動選択する
+    BGM_FILE: str = ""
+    BGM_VOLUME_DB: float = -22.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
