@@ -58,11 +58,10 @@ def _clean_thumbnail_text_candidate(raw: object) -> str | None:
     main = re.sub(r"[、。，．！？!?「」『』【】\s]+", "", parts[0])
     if not main:
         return None
-    main = main[:8]
     sub = ""
     if len(parts) >= 2:
         sub = re.sub(r"[。，．「」『』【】]+", "", parts[1])
-        sub = re.sub(r"\s+", " ", sub).strip()[:14]
+        sub = re.sub(r"\s+", " ", sub).strip()
     return f"{main}\n{sub}" if sub else main
 
 

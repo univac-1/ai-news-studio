@@ -417,12 +417,13 @@ def _split_headline(text: str) -> list[str]:
 
 def _fit_font_size(lines: list[str], max_width: int, start: int, minimum: int) -> int:
     size = start
-    while size > minimum:
+    while True:
         font = _load_font(size, bold=True)
         if max(_text_width(font, line) for line in lines) <= max_width:
-            break
-        size -= 8
-    return size
+            return size
+        if size <= minimum:
+            return minimum
+        size = max(size - 8, minimum)
 
 
 def _thumbnail_character_layer(target_height: int) -> Image.Image | None:
@@ -493,70 +494,93 @@ def _render_thumbnail(
     sub_line = " ".join(line for line in text_lines[1:] if line)
 
     # メイン見出し: まず1行で試し、小さくなりすぎるなら2行に割って各行を大きくする
+    badge_text = "今週のAI速報"
+    badge_visible = badge_text not in main_line
     text_max_width = 740
-    main_size = _fit_font_size([main_line], text_max_width, start=250, minimum=96)
+    main_min_size = 52
+    sub_min_size = 22
+    main_size = _fit_font_size([main_line], text_max_width, start=250, minimum=main_min_size)
     main_lines = [main_line]
     if main_size < 150:
         split_lines = _split_headline(main_line)
         if len(split_lines) == 2:
-            split_size = _fit_font_size(split_lines, text_max_width, start=210, minimum=96)
+            split_size = _fit_font_size(split_lines, text_max_width, start=210, minimum=main_min_size)
             if split_size > main_size:
                 main_lines = split_lines
                 main_size = split_size
     main_font = _load_font(main_size, bold=True)
-    outer_stroke = max(round(main_size * 0.085), 8)
-    inner_stroke = max(round(main_size * 0.03), 3)
-
-    main_layers = [
-        _headline_text_layer(
-            line,
-            main_font,
-            gradient_top=(255, 244, 92),
-            gradient_bottom=(255, 170, 0),
-            outer_stroke=outer_stroke,
-            inner_stroke=inner_stroke,
-        )
-        for line in main_lines
-    ]
+    if max(_text_width(main_font, line) for line in main_lines) > text_max_width:
+        main_lines = _wrap_by_pixels(main_line, main_font, text_max_width)
 
     # サブコピー: 赤帯ボックスに白文字
-    sub_layer: Image.Image | None = None
-    if sub_line:
-        sub_size = _fit_font_size([sub_line], text_max_width - 60, start=54, minimum=30)
-        sub_font = _load_font(sub_size, bold=True)
-        sub_bbox = sub_font.getbbox(sub_line)
-        pad_x, pad_y = 24, 14
-        box_w = sub_bbox[2] - sub_bbox[0] + pad_x * 2
-        box_h = sub_bbox[3] - sub_bbox[1] + pad_y * 2
-        sub_layer = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
-        sub_draw = ImageDraw.Draw(sub_layer)
-        sub_draw.rounded_rectangle((0, 0, box_w - 1, box_h - 1), radius=10, fill="#dc2626")
-        sub_draw.text(
-            (pad_x - sub_bbox[0], pad_y - sub_bbox[1]), sub_line, font=sub_font, fill="#ffffff"
-        )
-
-    # テキストブロックを1枚のレイヤーにまとめ、少し傾けて勢いを出す
-    line_gap = 6
-    block_w = max(
-        [layer.width for layer in main_layers] + ([sub_layer.width] if sub_layer else [])
+    sub_size = (
+        _fit_font_size([sub_line], text_max_width - 60, start=54, minimum=sub_min_size)
+        if sub_line
+        else 0
     )
-    block_h = sum(layer.height + line_gap for layer in main_layers)
-    if sub_layer is not None:
-        block_h += sub_layer.height + 14
-    block = Image.new("RGBA", (block_w + 40, block_h + 40), (0, 0, 0, 0))
-    y_cur = 20
-    for layer in main_layers:
-        block.alpha_composite(layer, (20, y_cur))
-        y_cur += layer.height + line_gap
-    if sub_layer is not None:
-        _paste_with_drop_shadow(block, sub_layer, (20 + outer_stroke, y_cur + 8), offset=(5, 6))
-    rotated = block.rotate(2.4, resample=Image.Resampling.BICUBIC, expand=True)
+
+    def build_text_block() -> Image.Image:
+        main_font = _load_font(main_size, bold=True)
+        outer_stroke = max(round(main_size * 0.085), 8)
+        inner_stroke = max(round(main_size * 0.03), 3)
+        main_layers = [
+            _headline_text_layer(
+                line,
+                main_font,
+                gradient_top=(255, 244, 92),
+                gradient_bottom=(255, 170, 0),
+                outer_stroke=outer_stroke,
+                inner_stroke=inner_stroke,
+            )
+            for line in main_lines
+        ]
+
+        sub_layer: Image.Image | None = None
+        if sub_line:
+            sub_font = _load_font(sub_size, bold=True)
+            sub_bbox = sub_font.getbbox(sub_line)
+            pad_x, pad_y = 24, 14
+            box_w = sub_bbox[2] - sub_bbox[0] + pad_x * 2
+            box_h = sub_bbox[3] - sub_bbox[1] + pad_y * 2
+            sub_layer = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+            sub_draw = ImageDraw.Draw(sub_layer)
+            sub_draw.rounded_rectangle((0, 0, box_w - 1, box_h - 1), radius=10, fill="#dc2626")
+            sub_draw.text(
+                (pad_x - sub_bbox[0], pad_y - sub_bbox[1]), sub_line, font=sub_font, fill="#ffffff"
+            )
+
+        # テキストブロックを1枚のレイヤーにまとめ、少し傾けて勢いを出す
+        line_gap = 6
+        block_w = max(
+            [layer.width for layer in main_layers] + ([sub_layer.width] if sub_layer else [])
+        )
+        block_h = sum(layer.height + line_gap for layer in main_layers)
+        if sub_layer is not None:
+            block_h += sub_layer.height + 14
+        block = Image.new("RGBA", (block_w + 40, block_h + 40), (0, 0, 0, 0))
+        y_cur = 20
+        for layer in main_layers:
+            block.alpha_composite(layer, (20, y_cur))
+            y_cur += layer.height + line_gap
+        if sub_layer is not None:
+            _paste_with_drop_shadow(block, sub_layer, (20 + outer_stroke, y_cur + 8), offset=(5, 6))
+        rotated = block.rotate(2.4, resample=Image.Resampling.BICUBIC, expand=True)
+        return rotated
+
+    rotated = build_text_block()
+    max_text_height = thumb_height - (112 if badge_visible else 52)
+    while rotated.height > max_text_height and (
+        main_size > main_min_size or (sub_line and sub_size > sub_min_size)
+    ):
+        if main_size > main_min_size:
+            main_size = max(main_size - 8, main_min_size)
+        if sub_line and sub_size > sub_min_size:
+            sub_size = max(sub_size - 4, sub_min_size)
+        rotated = build_text_block()
 
     # 見出しは左寄せ、バッジと下端の間で垂直センタリング。
     # ブロックが縦長のときはサブ帯が下端で切れないよう上に寄せる(バッジを描く場合は
     # バッジの下まで、描かない場合は上端近くまで許容)
-    badge_text = "今週のAI速報"
-    badge_visible = badge_text not in main_line
     text_x = 30
     text_y = max((thumb_height - rotated.height) // 2 + 14, 96)
     bottom_limit = thumb_height - 16
