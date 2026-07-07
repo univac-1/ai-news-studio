@@ -7,6 +7,7 @@
 """
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ from vertexai.generative_models import GenerativeModel
 
 from ..core.config import settings
 from ..schemas.draft import VideoPlanDraft
+
+logger = logging.getLogger(__name__)
 
 # VOICEVOXの歌唱合成におけるフレームレート(1秒 = 93.75フレーム)
 FRAMES_PER_SECOND = 93.75
@@ -275,14 +278,17 @@ async def generate_song_lyrics(draft: VideoPlanDraft) -> list[str]:
         return FALLBACK_LYRICS
 
 
-# check_song_support()の結果をキャッシュするモジュール変数
+# check_song_support()の結果をキャッシュするモジュール変数。
+# 対応確認済み(True)のみ恒久的にキャッシュする。False・例外時はキャッシュせず、
+# 次回呼び出しで再チェックする(コールドスタート直後の一時的な失敗で歌コーナーが
+# 永久に無効化されるのを防ぐため)。
 _song_support_cache: bool | None = None
 
 
 async def check_song_support() -> bool:
     """VOICEVOXが歌唱合成(singing_teacher/frame_decode)に対応しているか確認する。"""
     global _song_support_cache
-    if _song_support_cache is not None:
+    if _song_support_cache:
         return _song_support_cache
 
     try:
@@ -300,9 +306,18 @@ async def check_song_support() -> bool:
                     has_teacher = True
                 elif style_type == "frame_decode":
                     has_frame_decode = True
-        _song_support_cache = has_teacher and has_frame_decode
+
+        supported = has_teacher and has_frame_decode
+        if not supported:
+            logger.warning(
+                "VOICEVOX has no singing_teacher/frame_decode style; song corner disabled "
+                "(singers=%r)",
+                singers,
+            )
+        _song_support_cache = supported
     except Exception:
-        _song_support_cache = False
+        logger.exception("check_song_support failed; will retry on next call")
+        return False
 
     return _song_support_cache
 
