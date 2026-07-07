@@ -37,7 +37,7 @@ REACTION_GAP = 0.3
 LOUDNESS_I = -16.0
 LOUDNESS_TP = -1.5
 LOUDNESS_LRA = 11.0
-SUBTITLE_MARGIN_V = 52
+SUBTITLE_MARGIN_V = 40
 SUBTITLE_MARGIN_H = 30
 
 
@@ -1074,15 +1074,8 @@ def _render_visual_panel(
             y += 40
 
 
-def _render_slide(
-    spec: SlideSpec, path: Path, bullet_count: int = 2, compact: bool = False
-) -> None:
+def _render_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
     """スライドを1枚描画してpathに保存する。
-
-    bullet_countはsegmentスライドの箇条書き(何が変わるか/次にやること)を
-    何件描くかの段階表示用パラメータ。他の要素(タイトル・ベネフィット・
-    英語原題・図解・巨大番号・出典・キャラ)は全ステージで同一にし、
-    フレーム切り替え時のちらつきを防ぐ。
 
     compact=Trueはレビュー(video_review)がtext_overflow/overlapを検出した際の
     決定的な再レンダリング用フラグ。ベースフォントサイズを約15%縮小し、
@@ -1252,7 +1245,7 @@ def _render_slide(
         bullet_label_font = _load_font(26, bold=True)
         bullet_max_lines = _compact_max_lines(1 if spec.visual else 2, compact)
         y = 665 if spec.visual else 500
-        bullets = (("何が変わるか", spec.impact), ("次にやること", spec.action))[:bullet_count]
+        bullets = (("何が変わるか", spec.impact), ("次にやること", spec.action))
         for bullet_label, bullet_body in bullets:
             # アクセント色の正方形ビュレット + ラベル + 同じ行から始まる本文
             draw.rectangle((140, y + 11, 152, y + 23), fill=accent)
@@ -1289,11 +1282,6 @@ def _render_reaction_variant(spec: SlideSpec, base_path: Path, reaction_path: Pa
     image = _paste_character_overlay(image, replace(spec, narrator="zundamon"))
     reaction_path.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(reaction_path)
-
-
-# 解説スライドの段階表示を有効にする最小ナレーション秒数。これ未満は
-# 従来どおり箇条書き全表示の1枚絵のまま通す
-STAGE_REVEAL_MIN_DURATION = 12.0
 
 
 def _build_frame_timeline(
@@ -2011,20 +1999,8 @@ async def _build_part(
     vf = ",".join(vf_filters)
 
     # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
-    # segmentかつナレーションが十分長い場合は箇条書きを0→1→2件の3段階で
-    # 出し、reactionフレーム(=解説音声終わりでキャラが出現する最終フレーム)が
-    # あれば同じ仕組みでリストの末尾に追加する。
+    # segmentの箇条書きは最初から全表示し、必要な場合だけリアクション用フレームを末尾に追加する。
     frames: list[tuple[Path, float]] = [(slide_path, 0.0)]
-    if slide.kind == "segment" and expert_duration >= STAGE_REVEAL_MIN_DURATION:
-        stage0_path = slides_dir / f"slide_{index:03}_b0.png"
-        stage1_path = slides_dir / f"slide_{index:03}_b1.png"
-        _render_slide(slide, stage0_path, bullet_count=0, compact=compact)
-        _render_slide(slide, stage1_path, bullet_count=1, compact=compact)
-        frames = [
-            (stage0_path, 0.0),
-            (stage1_path, expert_duration * 0.45),
-            (slide_path, expert_duration * 0.70),
-        ]
     if show_reaction_character:
         frames.append((reaction_slide_path, expert_duration))
 
