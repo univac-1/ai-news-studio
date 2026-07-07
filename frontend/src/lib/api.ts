@@ -69,4 +69,8 @@ export const api = {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   },
+  uploadToYouTube: (videoId: string) =>
+    req<VideoArtifact>(`/api/videos/${videoId}/upload-youtube`, { method: 'POST' }),
+  publishVideo: (videoId: string) =>
+    req<VideoArtifact>(`/api/videos/${videoId}/publish`, { method: 'POST' }),
 }

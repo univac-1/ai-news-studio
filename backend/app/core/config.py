@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     # 空なら backend/app/assets/bgm/ 配下の *.mp3/*.wav/*.m4a をソートして先頭を自動選択する
     BGM_FILE: str = ""
     BGM_VOLUME_DB: float = -22.0
+    SONG_ENABLED: bool = True
+    # 以下はヒントに過ぎず、実行時は /singers を問い合わせて実在するスタイルを優先する
+    VOICEVOX_SING_TEACHER_ID: int = 6000
+    VOICEVOX_SING_SPEAKER_ID: int = 3061
+    # 動画生成後にGeminiが完成パートを見た目チェックし、はみ出し等を自動リテイクする機能。
+    # GEMINI_PROJECT未設定時は自動的にスキップされる(video_review.review_and_retake参照)。
+    REVIEW_ENABLED: bool = True
+    # Feature D: 週次完全自律運転(YouTube自動アップロード)向けのOAuth2設定。
+    # 取得方法は docs/youtube-oauth.md と scripts/get_youtube_refresh_token.py を参照。
+    YOUTUBE_CLIENT_ID: str = ""
+    YOUTUBE_CLIENT_SECRET: str = ""
+    YOUTUBE_REFRESH_TOKEN: str = ""
+    YOUTUBE_UPLOAD_ENABLED: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

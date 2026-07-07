@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import subprocess
 import wave
@@ -12,11 +13,15 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..core.config import settings
 from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
-from ..schemas.video import VideoArtifact
+from ..schemas.video import ReviewReport, VideoArtifact
 from .categorize import CategoryStyle, category_style
 from .generate_weekly_video_plan import contains_japanese
 from .image_assets import ThemeImages, generate_segment_images, generate_theme_images
 from .kana_reading import build_reading_map, to_voice_text
+from .song import check_song_support, generate_song_lyrics, synthesize_song
+from .video_review import review_and_retake
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent.parent
 GENERATED_DIR = BASE_DIR / "data" / "generated"
@@ -26,6 +31,8 @@ WIDTH = 1920
 HEIGHT = 1080
 # ニュース間の区切りスライドは無音・固定尺(テンポ優先で2秒未満)
 DIVIDER_DURATION = 1.8
+# AI専門家の解説とずんだもんの感想の間の無音ギャップ
+REACTION_GAP = 0.3
 # YouTube向けラウドネス目標(最終2パスloudnormで保証する)
 LOUDNESS_I = -16.0
 LOUDNESS_TP = -1.5
@@ -64,6 +71,7 @@ class SlideSpec:
     week_label: str = ""
     narrator: str = "zundamon"
     reaction_line: str = ""
+    lyrics: list[str] = field(default_factory=list)
 
 
 def _now_id() -> str:
@@ -175,6 +183,18 @@ def _draw_text_vcentered(
     getbbox の上余白(bb[1])を打ち消して光学的な中央に合わせる。"""
     bb = font.getbbox(text or " ")
     draw.text((x, top + (height - (bb[3] - bb[1])) // 2 - bb[1]), text, font=font, fill=fill)
+
+
+def _compact_base_size(base_size: int, compact: bool) -> int:
+    """compact=True時、レビューでのはみ出し指摘に対する決定的な救済策としてベース
+    フォントサイズを約15%縮小する(_draw_fitted等の開始サイズにのみ影響し、
+    min_sizeは変えない)。"""
+    return max(round(base_size * 0.85), 1) if compact else base_size
+
+
+def _compact_max_lines(max_lines: int, compact: bool) -> int:
+    """compact=True時、折り返し許容行数を1行増やす(縮小だけで収まらない長文向け)。"""
+    return max_lines + 1 if compact else max_lines
 
 
 def _draw_fitted(
@@ -315,6 +335,7 @@ def _format_chapter_time(seconds: float) -> str:
 def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
     lines: list[str] = ["0:00 オープニング"]
     outro_line: str | None = None
+    song_line: str | None = None
     pending_divider: float | None = None
     for slide, offset in zip(slides, slide_offsets):
         if slide.kind in {"divider", "illustration"}:
@@ -326,8 +347,12 @@ def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
             pending_divider = None
         elif slide.kind in {"outro", "ranking"}:
             outro_line = f"{_format_chapter_time(offset)} まとめ（今週の重要度ランキング）"
+        elif slide.kind == "song":
+            song_line = f"{_format_chapter_time(offset)} ずんだもんニュースソング"
     if outro_line:
         lines.append(outro_line)
+    if song_line:
+        lines.append(song_line)
     return "\n".join(lines)
 
 
@@ -744,7 +769,7 @@ _HEADER_ACCENT = "#f59e0b"
 def _character_expression(spec: SlideSpec) -> str:
     if spec.kind == "hook":
         return "surprise"
-    if spec.kind in {"opening", "ranking"}:
+    if spec.kind in {"opening", "ranking", "song"}:
         return "happy"
     if spec.kind == "illustration":
         return "point"
@@ -793,7 +818,7 @@ def _character_reserve_width(spec: SlideSpec) -> int:
         return 0
     if _character_image(spec) is None:
         return 0
-    if spec.kind in {"hook", "opening", "ranking"}:
+    if spec.kind in {"hook", "opening", "ranking", "song"}:
         return 420
     return 0
 
@@ -872,7 +897,7 @@ def _draw_header(draw: ImageDraw.ImageDraw, spec: SlideSpec) -> None:
         _draw_category_chip(draw, badge_left - 20, 38, category_style(spec.category), chip_font)
 
 
-def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
+def _render_divider_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
     # 区切りスライドは背景画像を使わず、濃色フルブリードで場面転換を強調する
     style = category_style(spec.category)
     image = Image.new("RGB", (WIDTH, HEIGHT), "#111827")
@@ -890,7 +915,8 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     draw.text(((WIDTH - number_w) / 2, 240), number_text, font=number_font, fill=style.color)
 
     y = _draw_fitted(
-        draw, (210, 540), spec.title, 64, 38, "#ffffff", 1500, 18, max_lines=3, bold=True
+        draw, (210, 540), spec.title, _compact_base_size(64, compact), 38, "#ffffff", 1500, 18,
+        max_lines=_compact_max_lines(3, compact), bold=True,
     )
 
     chip_label_w = _text_width(chip_font, style.label)
@@ -902,7 +928,7 @@ def _render_divider_slide(spec: SlideSpec, path: Path) -> None:
     image.convert("RGB").save(path)
 
 
-def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
+def _render_illustration_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
     """ニュースごとのAI解説イラストスライド(区切りを兼ねる)。
     全画面イラスト(なければダーク背景) + 左下に巨大#N・カテゴリチップ・日本語タイトル。"""
     style = category_style(spec.category)
@@ -940,9 +966,71 @@ def _render_illustration_slide(spec: SlideSpec, path: Path) -> None:
 
     # 日本語タイトル(最大2行)。字幕領域(2行時 y≈750〜)にかからない位置に置く
     _draw_fitted(
-        draw, (140, 560), label, 60, 34, "#ffffff", WIDTH - 280, 12, max_lines=2, bold=True
+        draw, (140, 560), label, _compact_base_size(60, compact), 34, "#ffffff", WIDTH - 280, 12,
+        max_lines=_compact_max_lines(2, compact), bold=True,
     )
 
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = _paste_character_overlay(image, spec)
+    image.convert("RGB").save(path)
+
+
+_SONG_ACCENT = "#f472b6"
+
+
+def _render_song_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
+    """ずんだもんニュースソングのコーナー。共通のダーク背景の上に、タイトル・
+    音符アクセント・歌詞(センタリング)を並べ、右下にずんだもん(happy)を重ねる。"""
+    image = _draw_dark_background()
+    draw = ImageDraw.Draw(image)
+    character_reserve = _character_reserve_width(spec)
+    content_width = WIDTH - 280 - character_reserve
+    content_left = 140
+    content_center = content_left + content_width / 2
+
+    draw.rectangle((80, 180, 96, 810), fill=_SONG_ACCENT)
+    _draw_header(draw, spec)
+
+    title_font = _load_font(_compact_base_size(64, compact), bold=True)
+    title_w = _text_width(title_font, spec.title)
+    title_bbox = title_font.getbbox(spec.title)
+    title_top = 170
+    draw.text(
+        (content_center - title_w / 2, title_top), spec.title, font=title_font, fill=_DARK_TITLE
+    )
+
+    # タイトル左右に音符アクセント(♪)を添えて「歌」であることを示す
+    note_font = _load_font(48, bold=True)
+    note_bbox = note_font.getbbox("♪")
+    note_y = title_top + (title_bbox[3] - title_bbox[1] - (note_bbox[3] - note_bbox[1])) / 2 - note_bbox[1] + title_bbox[1]
+    draw.text((content_center - title_w / 2 - 66, note_y), "♪", font=note_font, fill=_SONG_ACCENT)
+    draw.text((content_center + title_w / 2 + 26, note_y), "♪", font=note_font, fill=_SONG_ACCENT)
+
+    # 歌詞(最大4フレーズ)を等分の帯にセンタリングで描く。1帯に収まるよう
+    # 長い行はフォントを段階的に縮小する(_draw_fittedと同じ考え方)。
+    lines = [line for line in spec.lyrics if line] or spec.lyrics
+    n = max(len(lines), 1)
+    top, bottom, gap = 340, 820, 16
+    band_h = (bottom - top - gap * (n - 1)) / n
+    lyric_base, lyric_min = _compact_base_size(46, compact), 28
+    y = top
+    for line in lines:
+        size = lyric_base
+        font = _load_font(size, bold=True)
+        w = _text_width(font, line)
+        while w > content_width - 120 and size > lyric_min:
+            size -= 2
+            font = _load_font(size, bold=True)
+            w = _text_width(font, line)
+        bbox = font.getbbox(line or " ")
+        text_h = bbox[3] - bbox[1]
+        text_y = y + (band_h - text_h) / 2 - bbox[1]
+        draw.text((content_center - w / 2, text_y), line, font=font, fill=_DARK_TITLE)
+        note_small = _load_font(30, bold=True)
+        draw.text((content_center - w / 2 - 44, text_y), "♪", font=note_small, fill=_SONG_ACCENT)
+        y += band_h + gap
+
+    draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
     path.parent.mkdir(parents=True, exist_ok=True)
     image = _paste_character_overlay(image, spec)
     image.convert("RGB").save(path)
@@ -986,20 +1074,30 @@ def _render_visual_panel(
             y += 40
 
 
-def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
+def _render_slide(
+    spec: SlideSpec, path: Path, bullet_count: int = 2, compact: bool = False
+) -> None:
     """スライドを1枚描画してpathに保存する。
 
     bullet_countはsegmentスライドの箇条書き(何が変わるか/次にやること)を
     何件描くかの段階表示用パラメータ。他の要素(タイトル・ベネフィット・
     英語原題・図解・巨大番号・出典・キャラ)は全ステージで同一にし、
     フレーム切り替え時のちらつきを防ぐ。
+
+    compact=Trueはレビュー(video_review)がtext_overflow/overlapを検出した際の
+    決定的な再レンダリング用フラグ。ベースフォントサイズを約15%縮小し、
+    折り返し行数を1行増やして許容する。
     """
     if spec.kind == "divider":
-        _render_divider_slide(spec, path)
+        _render_divider_slide(spec, path, compact=compact)
         return
 
     if spec.kind == "illustration":
-        _render_illustration_slide(spec, path)
+        _render_illustration_slide(spec, path, compact=compact)
+        return
+
+    if spec.kind == "song":
+        _render_song_slide(spec, path, compact=compact)
         return
 
     # 全スライド共通のダーク背景(生成背景は使わない)
@@ -1008,8 +1106,8 @@ def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
     character_reserve = _character_reserve_width(spec)
     content_width = WIDTH - 280 - character_reserve
 
-    title_font = _load_font(68, bold=True)
-    body_font = _load_font(40)
+    title_font = _load_font(_compact_base_size(68, compact), bold=True)
+    body_font = _load_font(_compact_base_size(40, compact))
     meta_font = _load_font(28)
 
     _draw_header(draw, spec)
@@ -1044,15 +1142,18 @@ def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
     if spec.kind == "hook":
         # 冒頭0〜5秒: ラベル + 大きな一言のみ(読ませない、聞かせる)
         hook_label_font = _load_font(36, bold=True)
-        hook_body_font = _load_font(64, bold=True)
+        hook_body_font = _load_font(_compact_base_size(64, compact), bold=True)
         draw.text((140, 200), "今週の注目ニュース", font=hook_label_font, fill="#f87171")
         _draw_wrapped(
             draw, (140, 320), spec.body, hook_body_font, _DARK_TITLE,
-            content_width, 24, max_lines=3,
+            content_width, 24, max_lines=_compact_max_lines(3, compact),
         )
     elif spec.kind == "opening":
         # 5〜20秒: 価値提示 + ラインナップ一覧
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=1)
+        _draw_wrapped(
+            draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
+            max_lines=_compact_max_lines(1, compact),
+        )
         _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), _DARK_MUTED, content_width, 12, max_lines=1)
         num_font = _load_font(26, bold=True)
         y = 350
@@ -1083,7 +1184,10 @@ def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
                 fill=_DARK_FAINT,
             )
     elif spec.kind == "ranking":
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=1)
+        _draw_wrapped(
+            draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
+            max_lines=_compact_max_lines(1, compact),
+        )
         medal_colors = ["#eab308", "#9ca3af", "#b45309"]
         rank_num_font = _load_font(34, bold=True)
         y = 310
@@ -1123,18 +1227,20 @@ def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
         # タイトル → 一言ベネフィット → 英語原題 → (図解) → 箇条書き の縦積み構成。
         # タイトルが2行になった場合は後続の基準yを押し下げて重なりを防ぐ
         y_after_title = _draw_fitted(
-            draw, (140, 180), spec.title, 64, 48, _DARK_TITLE, content_width, 18, max_lines=2, bold=True
+            draw, (140, 180), spec.title, _compact_base_size(64, compact), 48, _DARK_TITLE,
+            content_width, 18, max_lines=_compact_max_lines(2, compact), bold=True,
         )
         benefit_y = max(330, y_after_title + 6)
         y_after_benefit = _draw_fitted(
-            draw, (140, benefit_y), spec.body, 34, 26, "#fbbf24", content_width, 8, max_lines=1, bold=True
+            draw, (140, benefit_y), spec.body, _compact_base_size(34, compact), 26, "#fbbf24",
+            content_width, 8, max_lines=1, bold=True,
         )
         # 元の見出し(英語など)は事実の原典として小さく併記する。補助情報なので、
         # min_sizeまで縮小してもなお収まらない場合に限り「...」省略を許容する
         if spec.headline and spec.headline not in spec.title:
             _draw_fitted(
-                draw, (140, max(395, y_after_benefit + 10)), spec.headline, 24, 20, _DARK_FAINT,
-                content_width, 0, max_lines=2,
+                draw, (140, max(395, y_after_benefit + 10)), spec.headline,
+                _compact_base_size(24, compact), 20, _DARK_FAINT, content_width, 0, max_lines=2,
             )
 
         if spec.visual:
@@ -1144,7 +1250,7 @@ def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
         # 図解ありは残り高さが少ない(665〜820)ため max_lines=1 で先に縮小させ、
         # バジェット超過の長文だけが最小サイズの折り返しになるようにする
         bullet_label_font = _load_font(26, bold=True)
-        bullet_max_lines = 1 if spec.visual else 2
+        bullet_max_lines = _compact_max_lines(1 if spec.visual else 2, compact)
         y = 665 if spec.visual else 500
         bullets = (("何が変わるか", spec.impact), ("次にやること", spec.action))[:bullet_count]
         for bullet_label, bullet_body in bullets:
@@ -1153,13 +1259,19 @@ def _render_slide(spec: SlideSpec, path: Path, bullet_count: int = 2) -> None:
             draw.text((164, y + 2), bullet_label, font=bullet_label_font, fill="#93c5fd")
             body_x = 164 + _text_width(bullet_label_font, bullet_label) + 28
             y = _draw_fitted(
-                draw, (body_x, y), bullet_body, 30, 22, _DARK_BODY,
+                draw, (body_x, y), bullet_body, _compact_base_size(30, compact), 22, _DARK_BODY,
                 max(520, WIDTH - 200 - character_reserve - body_x), 8, max_lines=bullet_max_lines,
             )
             y += 40
     else:
-        _draw_wrapped(draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18, max_lines=4)
-        _draw_wrapped(draw, (140, 490), spec.body, body_font, _DARK_BODY, content_width, 18, max_lines=4)
+        _draw_wrapped(
+            draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
+            max_lines=_compact_max_lines(4, compact),
+        )
+        _draw_wrapped(
+            draw, (140, 490), spec.body, body_font, _DARK_BODY, content_width, 18,
+            max_lines=_compact_max_lines(4, compact),
+        )
 
     # Keep everything above y=860; the area below is reserved for burned-in subtitles
     draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
@@ -1310,12 +1422,20 @@ def _select_bgm_file() -> Path | None:
     return files[0] if files else None
 
 
-def _mix_bgm(work_dir: Path, video_name: str, total_duration: float) -> None:
+def _mix_bgm(
+    work_dir: Path,
+    video_name: str,
+    total_duration: float,
+    mute_ranges: list[tuple[float, float]] | None = None,
+) -> None:
     """concat直後の動画にナレーションより十分低い音量でBGMを重ねる。
 
     BGM無効・ファイル未検出・ffmpeg失敗時は例外にせずBGMなしのまま続行する。
     最終ラウドネス正規化(_normalize_final_loudness)より前に呼ぶことで、
     BGM込みの音声に対して目標ラウドネスが適用されるようにする。
+
+    mute_ranges を渡すと、その[開始, 終了)秒区間だけBGM音量を0にする
+    (例: ずんだもんニュースソングのコーナーではBGMを止めて歌に集中させる)。
     """
     if not settings.BGM_ENABLED:
         return
@@ -1324,9 +1444,12 @@ def _mix_bgm(work_dir: Path, video_name: str, total_duration: float) -> None:
         return
     try:
         fade_start = max(total_duration - 2.0, 0.0)
+        bgm_filters = [f"volume={settings.BGM_VOLUME_DB:g}dB"]
+        for start, end in mute_ranges or []:
+            bgm_filters.append(f"volume=0:enable='between(t,{start:.3f},{end:.3f})'")
+        bgm_filters.append(f"afade=t=out:st={fade_start:.3f}:d=2")
         filter_complex = (
-            f"[1:a]volume={settings.BGM_VOLUME_DB:g}dB,"
-            f"afade=t=out:st={fade_start:.3f}:d=2[bgm];"
+            f"[1:a]{','.join(bgm_filters)}[bgm];"
             f"[0:a][bgm]amix=inputs=2:duration=first:normalize=0[aout]"
         )
         mixed_name = "video_bgm.mp4"
@@ -1645,7 +1768,9 @@ def _display_label(segment: VideoSegment) -> str:
 
 
 def _build_slides(
-    draft: VideoPlanDraft, segment_images: dict[int, Image.Image] | None = None
+    draft: VideoPlanDraft,
+    segment_images: dict[int, Image.Image] | None = None,
+    song_lyrics: list[str] | None = None,
 ) -> list[SlideSpec]:
     segment_images = segment_images or {}
     entries = [
@@ -1731,64 +1856,90 @@ def _build_slides(
             narrator="zundamon",
         )
     )
+    if song_lyrics:
+        slides.append(
+            SlideSpec(
+                kind="song",
+                title="ずんだもんニュースソング",
+                body="",
+                narration="",
+                week_label=draft.week_label,
+                narrator="zundamon",
+                lyrics=song_lyrics,
+            )
+        )
     return slides
 
 
-async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
-    video_id = _now_id()
-    work_dir = GENERATED_DIR / video_id
+@dataclass
+class PartBuildResult:
+    """_build_part 1回分の結果。generate_video_from_draft側の集計(padded_durations等)と、
+    レビューによるリテイク時の再利用(reuse_audio)に必要な情報を両方保持する。"""
+
+    slide: SlideSpec
+    part_number: int
+    chunk_durations: list[tuple[str, float, str]]
+    part_duration: float
+    expert_duration: float
+    fade_duration: float
+    voice_wav_params: tuple[int, int, int] | None
+
+
+async def _build_part(
+    slide: SlideSpec,
+    part_number: int,
+    work_dir: Path,
+    *,
+    reading_map: dict[str, str] | None = None,
+    voice_wav_params: tuple[int, int, int] | None = None,
+    font_name: str | None = None,
+    compact: bool = False,
+    reuse_audio: bool = False,
+    reuse: PartBuildResult | None = None,
+    song_entries: list[tuple[str, float]] | None = None,
+) -> PartBuildResult:
+    """1パート分(スライド1枚)の音声合成・スライド描画・ffmpegエンコードを行い、
+    work_dir/parts/part_NNN.mp4 を書き出す。
+
+    reuse_audio=Trueの場合(video_reviewからのリテイク)は音声合成を一切行わず、
+    既存の audio/audio_NNN.wav と reuse(直前ビルドのPartBuildResult)が持つ
+    chunk_durations/part_duration/expert_duration/fade_durationをそのまま使い、
+    スライドPNGの再描画(compactを反映)とffmpegでのパート再エンコードだけを行う。
+    これによりリテイクは純粋に「見た目」の修正であり、音声・尺・SRTのタイミングは
+    一切変えない。
+    """
     slides_dir = work_dir / "slides"
     audio_dir = work_dir / "audio"
-    parts_dir = work_dir / "parts"
-    work_dir.mkdir(parents=True, exist_ok=False)
-    parts_dir.mkdir(parents=True, exist_ok=True)
+    index = part_number
+    font_name = font_name or _subtitle_font()
 
-    # 背景画像を生成(未設定・失敗時は None で従来デザインにフォールバック)
-    theme = await generate_theme_images(draft)
-    _save_theme_assets(theme, work_dir / "assets")
+    slide_path = slides_dir / f"slide_{index:03}.png"
+    audio_path = audio_dir / f"audio_{index:03}.wav"
+    part_srt_rel = f"parts/part_{index:03}.srt"
+    part_srt_path = work_dir / part_srt_rel
 
-    # ニュースごとのAI解説イラストを生成(未設定・失敗したセグメントは辞書に含まれない)
-    segment_images = await generate_segment_images(draft.segments)
-    _save_segment_image_assets(segment_images, work_dir / "assets")
+    _render_slide(slide, slide_path, compact=compact)
 
-    if theme.thumbnail_bg is None:
-        raise ThumbnailGenerationError(
-            "サムネイル背景画像の生成に失敗しました。IMAGE_GEN_ENABLED と GEMINI_PROJECT、"
-            "画像生成モデルの権限・クォータを確認してください。"
-        )
-    _render_thumbnail(draft, work_dir / "thumbnail.png", background=theme.thumbnail_bg)
-
-    slides = _build_slides(draft, segment_images)
-    reading_map = await build_reading_map(
-        [slide.narration for slide in slides if slide.narration]
-        + [slide.reaction_line for slide in slides if slide.reaction_line]
+    # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
+    # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
+    show_reaction_character = bool(
+        slide.kind == "segment"
+        and slide.reaction_line
+        and settings.CHARACTER_OVERLAY_ENABLED
+        and settings.CHARACTER_OVERLAY_NAME
     )
-    padded_durations: list[float] = []
-    all_chunk_durations: list[list[tuple[str, float, str]]] = []
-    font_name = _subtitle_font()
-    voice_wav_params: tuple[int, int, int] | None = None
-    REACTION_GAP = 0.3
+    reaction_slide_path = slides_dir / f"slide_{index:03}_reaction.png"
+    if show_reaction_character:
+        _render_reaction_variant(slide, slide_path, reaction_slide_path)
 
-    for index, slide in enumerate(slides, 1):
-        slide_path = slides_dir / f"slide_{index:03}.png"
-        audio_path = audio_dir / f"audio_{index:03}.wav"
-        part_srt_rel = f"parts/part_{index:03}.srt"
-        part_srt_path = work_dir / part_srt_rel
-
-        _render_slide(slide, slide_path)
-
-        # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
-        # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
-        show_reaction_character = bool(
-            slide.kind == "segment"
-            and slide.reaction_line
-            and settings.CHARACTER_OVERLAY_ENABLED
-            and settings.CHARACTER_OVERLAY_NAME
-        )
-        reaction_slide_path = slides_dir / f"slide_{index:03}_reaction.png"
-        if show_reaction_character:
-            _render_reaction_variant(slide, slide_path, reaction_slide_path)
-
+    if reuse_audio:
+        if reuse is None:
+            raise ValueError("reuse_audio=True には reuse(直前のPartBuildResult)が必要です")
+        chunk_durations = reuse.chunk_durations
+        part_duration = reuse.part_duration
+        expert_duration = reuse.expert_duration
+        fade_duration = reuse.fade_duration
+    else:
         expert_duration = 0.0
         if slide.kind == "divider":
             # 区切りは無音・固定尺・字幕なし。WAVパラメータはVOICEVOX出力に揃える
@@ -1797,6 +1948,17 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             chunk_durations = []
             part_duration = DIVIDER_DURATION
             fade_duration = 0.3
+        elif slide.kind == "song":
+            # 歌唱音声はループ冒頭で既に合成済み(probe_path)。パート番号確定後の
+            # 正式なaudio_pathへ移し、通常パートと同じくSRT・フェード・loudnormを適用する
+            probe_path = audio_dir / "song_probe.wav"
+            probe_path.replace(audio_path)
+            chunk_durations = [(text, dur, "zundamon") for text, dur in (song_entries or [])]
+            if voice_wav_params is None:
+                voice_wav_params = _wav_params(audio_path)
+            audio_duration = max(sum(dur for _, dur, _ in chunk_durations), 1.0)
+            part_duration = audio_duration + 0.4
+            fade_duration = 0.4
         else:
             speaker_id = (
                 settings.VOICEVOX_SPEAKER_ID_EXPERT
@@ -1834,107 +1996,126 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             part_duration = audio_duration + 0.4
             fade_duration = 0.4
 
-        padded_durations.append(part_duration)
-        all_chunk_durations.append(chunk_durations)
+    fade_out_start = part_duration - fade_duration
+    vf_filters = ["setsar=1,fps=30"]
+    if chunk_durations:
+        _write_part_srt(chunk_durations, part_srt_path)
+        vf_filters.append(
+            f"subtitles={part_srt_rel}"
+            f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
+            f",BackColour=&H60000000,MarginV={SUBTITLE_MARGIN_V}"
+            f",MarginL={SUBTITLE_MARGIN_H},MarginR={SUBTITLE_MARGIN_H}'"
+        )
+    vf_filters.append(f"fade=t=in:st=0:d={fade_duration}")
+    vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")
+    vf = ",".join(vf_filters)
 
-        fade_out_start = part_duration - fade_duration
-        vf_filters = ["setsar=1,fps=30"]
-        if chunk_durations:
-            _write_part_srt(chunk_durations, part_srt_path)
-            vf_filters.append(
-                f"subtitles={part_srt_rel}"
-                f":force_style='FontName={font_name},FontSize=17,BorderStyle=3,Outline=1,Shadow=0"
-                f",BackColour=&H60000000,MarginV={SUBTITLE_MARGIN_V}"
-                f",MarginL={SUBTITLE_MARGIN_H},MarginR={SUBTITLE_MARGIN_H}'"
-            )
-        vf_filters.append(f"fade=t=in:st=0:d={fade_duration}")
-        vf_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration}")
-        vf = ",".join(vf_filters)
-
-        # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
-        # segmentかつナレーションが十分長い場合は箇条書きを0→1→2件の3段階で
-        # 出し、reactionフレーム(=解説音声終わりでキャラが出現する最終フレーム)が
-        # あれば同じ仕組みでリストの末尾に追加する。
-        frames: list[tuple[Path, float]] = [(slide_path, 0.0)]
-        if slide.kind == "segment" and expert_duration >= STAGE_REVEAL_MIN_DURATION:
-            stage0_path = slides_dir / f"slide_{index:03}_b0.png"
-            stage1_path = slides_dir / f"slide_{index:03}_b1.png"
-            _render_slide(slide, stage0_path, bullet_count=0)
-            _render_slide(slide, stage1_path, bullet_count=1)
-            frames = [
-                (stage0_path, 0.0),
-                (stage1_path, expert_duration * 0.45),
-                (slide_path, expert_duration * 0.70),
-            ]
-        if show_reaction_character:
-            frames.append((reaction_slide_path, expert_duration))
-
-        frame_specs = _build_frame_timeline(frames, part_duration)
-
-        if len(frame_specs) > 1:
-            filter_complex = _build_multi_frame_filter([duration for _, duration in frame_specs])
-            filter_complex += f";[vcat]{vf}[vout]"
-            args = []
-            for frame_path, _ in frame_specs:
-                args += ["-loop", "1", "-i", f"slides/{frame_path.name}"]
-            args += [
-                "-i",
-                f"audio/audio_{index:03}.wav",
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[vout]",
-                "-map",
-                f"{len(frame_specs)}:a",
-            ]
-        else:
-            args = [
-                "-loop",
-                "1",
-                "-i",
-                f"slides/{frame_specs[0][0].name}",
-                "-i",
-                f"audio/audio_{index:03}.wav",
-                "-vf",
-                vf,
-            ]
-        if slide.kind != "divider":
-            # 無音区切りへの loudnorm は不安定なため音声付きパートのみ正規化する
-            args += [
-                "-af",
-                f"apad=pad_dur=0.4,loudnorm=I={LOUDNESS_I:g}:TP={LOUDNESS_TP:g}:LRA={LOUDNESS_LRA:g}",
-            ]
-        args += [
-            "-t",
-            f"{part_duration:.3f}",
-            "-c:v",
-            "libx264",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            # loudnorm の内部リサンプリング有無に関わらず全パートのAAC条件を揃え、
-            # concat -c copy を成立させるため出力サンプルレート/チャンネルを固定する
-            "-ar",
-            "48000",
-            "-ac",
-            "1",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "18",
-            "-preset",
-            "medium",
-            f"parts/part_{index:03}.mp4",
+    # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
+    # segmentかつナレーションが十分長い場合は箇条書きを0→1→2件の3段階で
+    # 出し、reactionフレーム(=解説音声終わりでキャラが出現する最終フレーム)が
+    # あれば同じ仕組みでリストの末尾に追加する。
+    frames: list[tuple[Path, float]] = [(slide_path, 0.0)]
+    if slide.kind == "segment" and expert_duration >= STAGE_REVEAL_MIN_DURATION:
+        stage0_path = slides_dir / f"slide_{index:03}_b0.png"
+        stage1_path = slides_dir / f"slide_{index:03}_b1.png"
+        _render_slide(slide, stage0_path, bullet_count=0, compact=compact)
+        _render_slide(slide, stage1_path, bullet_count=1, compact=compact)
+        frames = [
+            (stage0_path, 0.0),
+            (stage1_path, expert_duration * 0.45),
+            (slide_path, expert_duration * 0.70),
         ]
-        _run_ffmpeg(args, cwd=work_dir)
+    if show_reaction_character:
+        frames.append((reaction_slide_path, expert_duration))
 
+    frame_specs = _build_frame_timeline(frames, part_duration)
+
+    if len(frame_specs) > 1:
+        filter_complex = _build_multi_frame_filter([duration for _, duration in frame_specs])
+        filter_complex += f";[vcat]{vf}[vout]"
+        args = []
+        for frame_path, _ in frame_specs:
+            args += ["-loop", "1", "-i", f"slides/{frame_path.name}"]
+        args += [
+            "-i",
+            f"audio/audio_{index:03}.wav",
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[vout]",
+            "-map",
+            f"{len(frame_specs)}:a",
+        ]
+    else:
+        args = [
+            "-loop",
+            "1",
+            "-i",
+            f"slides/{frame_specs[0][0].name}",
+            "-i",
+            f"audio/audio_{index:03}.wav",
+            "-vf",
+            vf,
+        ]
+    if slide.kind != "divider":
+        # 無音区切りへの loudnorm は不安定なため音声付きパートのみ正規化する
+        args += [
+            "-af",
+            f"apad=pad_dur=0.4,loudnorm=I={LOUDNESS_I:g}:TP={LOUDNESS_TP:g}:LRA={LOUDNESS_LRA:g}",
+        ]
+    args += [
+        "-t",
+        f"{part_duration:.3f}",
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        # loudnorm の内部リサンプリング有無に関わらず全パートのAAC条件を揃え、
+        # concat -c copy を成立させるため出力サンプルレート/チャンネルを固定する
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "18",
+        "-preset",
+        "medium",
+        f"parts/part_{index:03}.mp4",
+    ]
+    _run_ffmpeg(args, cwd=work_dir)
+
+    return PartBuildResult(
+        slide=slide,
+        part_number=part_number,
+        chunk_durations=chunk_durations,
+        part_duration=part_duration,
+        expert_duration=expert_duration,
+        fade_duration=fade_duration,
+        voice_wav_params=voice_wav_params,
+    )
+
+
+def _assemble_final(
+    work_dir: Path,
+    final_slides: list[SlideSpec],
+    padded_durations: list[float],
+) -> list[float]:
+    """parts/*.mp4 からconcat→BGM重ね→ラウドネス正規化までを行い、動画全体を
+    work_dir/video.mp4 として書き出す。スライドのoffsetのリスト(SRT・チャプター用)を返す。
+
+    毎回 parts/*.mp4 から作り直す(concatの出力・中間ファイルは全てffmpegの -y で
+    都度上書き)ため、リテイク後にこの関数を再実行しても古い中間ファイルの内容が
+    混入することはない。
+    """
     concat_file = work_dir / "concat.txt"
     concat_file.write_text(
-        "".join(f"file 'parts/part_{i:03}.mp4'\n" for i in range(1, len(slides) + 1)),
+        "".join(f"file 'parts/part_{i:03}.mp4'\n" for i in range(1, len(final_slides) + 1)),
         encoding="utf-8",
     )
-    video_path = work_dir / "video.mp4"
     _run_ffmpeg(
         [
             "-f",
@@ -1950,17 +2131,164 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         cwd=work_dir,
     )
 
-    # ナレーション音声に低音量BGMを重ねる(ラウドネス正規化の前に行う)
-    _mix_bgm(work_dir, "video.mp4", sum(padded_durations))
-
-    # YouTube向けラウドネス(-16 LUFS / TP -1.5 dBTP)を動画全体で保証する
-    _normalize_final_loudness(work_dir, "video.mp4")
-
     slide_offsets: list[float] = []
     cursor = 0.0
     for dur in padded_durations:
         slide_offsets.append(cursor)
         cursor += dur
+
+    # ずんだもんニュースソングのコーナー中はBGMを止め、歌に集中させる
+    song_mute_ranges: list[tuple[float, float]] = [
+        (offset, offset + dur)
+        for slide, offset, dur in zip(final_slides, slide_offsets, padded_durations)
+        if slide.kind == "song"
+    ]
+
+    # ナレーション音声に低音量BGMを重ねる(ラウドネス正規化の前に行う)
+    _mix_bgm(
+        work_dir, "video.mp4", sum(padded_durations), mute_ranges=song_mute_ranges or None
+    )
+
+    # YouTube向けラウドネス(-16 LUFS / TP -1.5 dBTP)を動画全体で保証する
+    _normalize_final_loudness(work_dir, "video.mp4")
+
+    return slide_offsets
+
+
+async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
+    video_id = _now_id()
+    work_dir = GENERATED_DIR / video_id
+    audio_dir = work_dir / "audio"
+    parts_dir = work_dir / "parts"
+    work_dir.mkdir(parents=True, exist_ok=False)
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    # 背景画像を生成(未設定・失敗時は None で従来デザインにフォールバック)
+    theme = await generate_theme_images(draft)
+    _save_theme_assets(theme, work_dir / "assets")
+
+    # ニュースごとのAI解説イラストを生成(未設定・失敗したセグメントは辞書に含まれない)
+    segment_images = await generate_segment_images(draft.segments)
+    _save_segment_image_assets(segment_images, work_dir / "assets")
+
+    if theme.thumbnail_bg is None:
+        raise ThumbnailGenerationError(
+            "サムネイル背景画像の生成に失敗しました。IMAGE_GEN_ENABLED と GEMINI_PROJECT、"
+            "画像生成モデルの権限・クォータを確認してください。"
+        )
+    _render_thumbnail(draft, work_dir / "thumbnail.png", background=theme.thumbnail_bg)
+
+    # ずんだもんニュースソング(週次まとめの歌唱コーナー)。VOICEVOXが歌唱合成に
+    # 対応していない・歌詞生成/合成に失敗した場合は静かにスキップし、通常の
+    # 動画生成を止めない。
+    song_lyrics: list[str] | None = None
+    if settings.SONG_ENABLED:
+        try:
+            if await check_song_support():
+                song_lyrics = await generate_song_lyrics(draft)
+                (work_dir / "song_lyrics.json").write_text(
+                    json.dumps({"phrases": song_lyrics}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+        except Exception:
+            logger.exception("song lyrics generation failed; skipping song corner")
+            song_lyrics = None
+
+    slides = _build_slides(draft, segment_images, song_lyrics=song_lyrics)
+    reading_map = await build_reading_map(
+        [slide.narration for slide in slides if slide.narration]
+        + [slide.reaction_line for slide in slides if slide.reaction_line]
+    )
+    padded_durations: list[float] = []
+    all_chunk_durations: list[list[tuple[str, float, str]]] = []
+    final_slides: list[SlideSpec] = []
+    part_records: list[PartBuildResult] = []
+    font_name = _subtitle_font()
+    voice_wav_params: tuple[int, int, int] | None = None
+
+    part_number = 0
+    for slide in slides:
+        song_entries: list[tuple[str, float]] | None = None
+        if slide.kind == "song":
+            # 歌唱合成はVOICEVOX呼び出しを伴い失敗しうる。失敗時はこのスライド
+            # 丸ごとをスキップし、パート番号・concatリストの連番は乱れないようにする
+            # (part_numberをまだ進めていないので、後続スライドの番号もずれない)。
+            probe_path = audio_dir / "song_probe.wav"
+            try:
+                song_entries = await synthesize_song(slide.lyrics, probe_path)
+            except Exception:
+                logger.exception("song synthesis failed; skipping song corner")
+                continue
+
+        part_number += 1
+        result = await _build_part(
+            slide,
+            part_number,
+            work_dir,
+            reading_map=reading_map,
+            voice_wav_params=voice_wav_params,
+            font_name=font_name,
+            song_entries=song_entries,
+        )
+        voice_wav_params = result.voice_wav_params
+        padded_durations.append(result.part_duration)
+        all_chunk_durations.append(result.chunk_durations)
+        final_slides.append(slide)
+        part_records.append(result)
+
+    slide_offsets = _assemble_final(work_dir, final_slides, padded_durations)
+
+    # --- 自己レビュー&自動リテイク(Feature C) ---
+    # 完成した各パートをGeminiのマルチモーダルにチェックさせ、はみ出し・重なり等の
+    # 明確な不具合を自動リテイクする。retake_part/assembleはvideo_reviewとの
+    # 循環importを避けるためのクロージャコールバック。レビューは失敗しても
+    # 動画生成自体を絶対に止めない(status="skipped"に倒す)。
+    async def retake_part(part_index: int, *, compact: bool, drop_image: bool) -> None:
+        record = part_records[part_index - 1]
+        slide_for_retake = record.slide
+        if drop_image:
+            # illustrationスライドの生成イラストを外し、ダーク背景フォールバックにする
+            slide_for_retake = replace(slide_for_retake, image=None)
+        updated = await _build_part(
+            slide_for_retake,
+            record.part_number,
+            work_dir,
+            reading_map=reading_map,
+            voice_wav_params=voice_wav_params,
+            font_name=font_name,
+            compact=compact,
+            reuse_audio=True,
+            reuse=record,
+        )
+        part_records[part_index - 1] = updated
+        final_slides[part_index - 1] = slide_for_retake
+
+    async def assemble() -> None:
+        _assemble_final(work_dir, final_slides, padded_durations)
+
+    review_report = ReviewReport(status="skipped")
+    try:
+        if settings.REVIEW_ENABLED and settings.GEMINI_PROJECT:
+            part_contexts = [
+                {
+                    "part": record.part_number,
+                    "kind": record.slide.kind,
+                    "title": record.slide.title,
+                    "narration": record.slide.narration,
+                    "reaction_line": record.slide.reaction_line,
+                }
+                for record in part_records
+            ]
+            review_report = await review_and_retake(
+                work_dir=work_dir,
+                part_durations=[record.part_duration for record in part_records],
+                part_contexts=part_contexts,
+                retake_part=retake_part,
+                assemble=assemble,
+            )
+    except Exception:
+        logger.exception("review_and_retake failed; skipping review")
+        review_report = ReviewReport(status="skipped")
 
     subtitles_path = work_dir / "subtitles.srt"
     _write_srt(all_chunk_durations, slide_offsets, subtitles_path)
@@ -1981,7 +2309,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         json.dumps(voice_texts, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    chapters = _build_chapters(slides, slide_offsets)
+    chapters = _build_chapters(final_slides, slide_offsets)
     youtube_description = _strip_date_range(draft.description) + "\n\n▼ チャプター\n" + chapters
     title = _strip_date_range(draft.title)
     title_candidates = [_strip_date_range(candidate) for candidate in draft.title_candidates]
@@ -1993,14 +2321,17 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         draft_generated_at=draft.generated_at,
         total_items=draft.total_items,
         duration_seconds=round(sum(padded_durations), 3),
-        video_path=video_path.name,
+        video_path=(work_dir / "video.mp4").name,
         subtitles_path=subtitles_path.name,
-        slide_count=len(slides),
+        slide_count=len(final_slides),
         thumbnail_path="thumbnail.png",
         chapters=chapters,
         youtube_description=youtube_description,
         title_candidates=title_candidates,
         thumbnail_text_candidates=draft.thumbnail_text_candidates,
+        review_status=review_report.status,
+        review_findings=review_report.findings,
+        hashtags=draft.hashtags,
     )
     (work_dir / "metadata.json").write_text(
         artifact.model_dump_json(indent=2), encoding="utf-8"

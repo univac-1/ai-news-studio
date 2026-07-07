@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { Download, FileText, Image, Video } from 'lucide-react'
+import { Download, FileText, Image, Video, Upload, Globe, ExternalLink } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Badge } from '@/components/ui/badge'
 import { CopyButton } from '@/components/CopyButton'
 import { useVideos } from '@/hooks/useVideos'
 import { api } from '@/lib/api'
@@ -17,8 +18,10 @@ function formatDuration(seconds: number): string {
 }
 
 export function VideoListPage() {
-  const { videos, loading, error } = useVideos()
+  const { videos, loading, error, refetch } = useVideos()
   const [actionError, setActionError] = useState<string | null>(null)
+  const [expandedFindings, setExpandedFindings] = useState<Set<string>>(new Set())
+  const [pendingYouTube, setPendingYouTube] = useState<Set<string>>(new Set())
 
   async function runDownload(action: () => Promise<void>) {
     setActionError(null)
@@ -27,6 +30,61 @@ export function VideoListPage() {
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'ダウンロードに失敗しました')
     }
+  }
+
+  async function handleUploadToYouTube(videoId: string) {
+    setActionError(null)
+    setPendingYouTube(prev => new Set([...prev, videoId]))
+    try {
+      await api.uploadToYouTube(videoId)
+      await refetch()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'YouTubeへのアップロードに失敗しました')
+    } finally {
+      setPendingYouTube(prev => {
+        const next = new Set(prev)
+        next.delete(videoId)
+        return next
+      })
+    }
+  }
+
+  async function handlePublishVideo(videoId: string) {
+    setActionError(null)
+    setPendingYouTube(prev => new Set([...prev, videoId]))
+    try {
+      const confirmed = window.confirm('YouTubeで一般公開します。よろしいですか？')
+      if (!confirmed) {
+        setPendingYouTube(prev => {
+          const next = new Set(prev)
+          next.delete(videoId)
+          return next
+        })
+        return
+      }
+      await api.publishVideo(videoId)
+      await refetch()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'YouTubeで公開に失敗しました')
+    } finally {
+      setPendingYouTube(prev => {
+        const next = new Set(prev)
+        next.delete(videoId)
+        return next
+      })
+    }
+  }
+
+  function toggleFindings(videoId: string) {
+    setExpandedFindings(prev => {
+      const next = new Set(prev)
+      if (next.has(videoId)) {
+        next.delete(videoId)
+      } else {
+        next.add(videoId)
+      }
+      return next
+    })
   }
 
   return (
@@ -63,55 +121,147 @@ export function VideoListPage() {
           <div className="space-y-2">
             {videos.map(video => (
               <Card key={video.id}>
-                <CardContent className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 p-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{video.title}</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {formatDateTime(video.created_at)} / {formatDuration(video.duration_seconds)} /{' '}
-                      {video.slide_count}枚 / {video.total_items}件
-                    </p>
-                    <p className="text-[11px] text-muted-foreground mt-1 font-mono">{video.id}</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {video.youtube_description && (
-                      <CopyButton text={video.youtube_description} label="概要欄" />
-                    )}
-                    {video.chapters && <CopyButton text={video.chapters} label="章立て" />}
-                    {video.thumbnail_path && (
+                <CardContent className="flex flex-col gap-3 p-4">
+                  <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium truncate">{video.title}</p>
+                        {video.review_status === 'passed' && (
+                          <Badge className="bg-green-100 text-green-800 border-green-200 shrink-0">
+                            レビューOK
+                          </Badge>
+                        )}
+                        {video.review_status === 'passed_with_warnings' && video.review_findings && (
+                          <button
+                            onClick={() => toggleFindings(video.id)}
+                            className="shrink-0"
+                          >
+                            <Badge className="bg-amber-100 text-amber-800 border-amber-200 cursor-pointer hover:opacity-80 transition-opacity">
+                              要確認 {video.review_findings.length}件
+                            </Badge>
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {formatDateTime(video.created_at)} / {formatDuration(video.duration_seconds)} /{' '}
+                        {video.slide_count}枚 / {video.total_items}件
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-1 font-mono">{video.id}</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {video.youtube_description && (
+                        <CopyButton text={video.youtube_description} label="概要欄" />
+                      )}
+                      {video.chapters && <CopyButton text={video.chapters} label="章立て" />}
+                      {video.thumbnail_path && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void runDownload(() => api.downloadThumbnail(video.id))}
+                        >
+                          <Image className="w-3.5 h-3.5" />
+                          サムネ
+                        </Button>
+                      )}
+                      {!video.youtube_video_id && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleUploadToYouTube(video.id)}
+                          disabled={pendingYouTube.has(video.id)}
+                        >
+                          {pendingYouTube.has(video.id) ? (
+                            <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            <Upload className="w-3.5 h-3.5" />
+                          )}
+                          YouTubeへアップロード
+                        </Button>
+                      )}
+                      {video.youtube_privacy === 'unlisted' && (
+                        <>
+                          {video.youtube_url && (
+                            <a
+                              href={video.youtube_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium border border-input rounded-md hover:bg-accent hover:text-accent-foreground transition-colors"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              限定公開で確認
+                            </a>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handlePublishVideo(video.id)}
+                            disabled={pendingYouTube.has(video.id)}
+                          >
+                            {pendingYouTube.has(video.id) ? (
+                              <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <Globe className="w-3.5 h-3.5" />
+                            )}
+                            公開する
+                          </Button>
+                        </>
+                      )}
+                      {video.youtube_privacy === 'public' && video.youtube_url && (
+                        <>
+                          <Badge className="bg-blue-100 text-blue-800 border-blue-200 shrink-0">
+                            公開済み
+                          </Badge>
+                          <a
+                            href={video.youtube_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium border border-input rounded-md hover:bg-accent hover:text-accent-foreground transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            YouTubeで確認
+                          </a>
+                        </>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => void runDownload(() => api.downloadThumbnail(video.id))}
+                        onClick={() => void runDownload(() => api.downloadVideo(video.id))}
                       >
-                        <Image className="w-3.5 h-3.5" />
-                        サムネ
+                        <Download className="w-3.5 h-3.5" />
+                        MP4
                       </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void runDownload(() => api.downloadVideo(video.id))}
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      MP4
-                    </Button>
-                    {video.title_candidates && video.title_candidates.length > 0 && (
-                      <CopyButton text={video.title_candidates.join('\n')} label="タイトル案" />
-                    )}
-                    {video.thumbnail_text_candidates &&
-                      video.thumbnail_text_candidates.length > 0 && (
-                        <CopyButton
-                          text={video.thumbnail_text_candidates.join('\n\n---\n\n')}
-                          label="サムネ案"
-                        />
+                      {video.title_candidates && video.title_candidates.length > 0 && (
+                        <CopyButton text={video.title_candidates.join('\n')} label="タイトル案" />
                       )}
-                    {!video.youtube_description && (
-                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                        <FileText className="w-3.5 h-3.5" />
-                        概要欄なし
-                      </span>
-                    )}
+                      {video.thumbnail_text_candidates &&
+                        video.thumbnail_text_candidates.length > 0 && (
+                          <CopyButton
+                            text={video.thumbnail_text_candidates.join('\n\n---\n\n')}
+                            label="サムネ案"
+                          />
+                        )}
+                      {!video.youtube_description && (
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                          <FileText className="w-3.5 h-3.5" />
+                          概要欄なし
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  {expandedFindings.has(video.id) && video.review_findings && video.review_findings.length > 0 && (
+                    <div className="mt-2 pt-3 border-t bg-amber-50 rounded-lg p-3 space-y-2">
+                      <div className="text-xs font-semibold text-amber-900">レビュー指摘事項</div>
+                      {video.review_findings.map((finding, idx) => (
+                        <div key={idx} className="text-xs space-y-1 text-amber-900">
+                          <div className="flex items-start gap-2">
+                            <span className="font-semibold shrink-0">#{finding.part}</span>
+                            <span className="font-mono bg-amber-100 px-1.5 py-0.5 rounded">{finding.code}</span>
+                          </div>
+                          <div className="ml-0 text-amber-800">{finding.description}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             ))}

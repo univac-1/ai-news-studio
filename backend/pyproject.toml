@@ -13,7 +13,13 @@ dependencies = [
     "google-cloud-aiplatform>=1.71",
     "google-genai>=1.0",
     "alkana>=0.0.3",
+    "google-api-python-client>=2.140",
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [build-system]
 requires = ["hatchling"]

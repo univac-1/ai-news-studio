@@ -41,6 +41,13 @@ export interface UsedNewsEntry {
   used_at: string
 }
 
+export interface ReviewFinding {
+  part: number
+  code: string
+  description: string
+  fixable: boolean
+}
+
 export interface VideoArtifact {
   id: string
   title: string
@@ -56,6 +63,12 @@ export interface VideoArtifact {
   thumbnail_path?: string
   title_candidates?: string[]
   thumbnail_text_candidates?: string[]
+  review_status?: string
+  review_findings?: ReviewFinding[]
+  youtube_video_id?: string
+  youtube_privacy?: string
+  youtube_url?: string
+  hashtags?: string[]
 }
 
 export interface VideoArtifactList {
