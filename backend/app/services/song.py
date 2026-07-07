@@ -354,6 +354,7 @@ async def _resolve_style_ids() -> tuple[int, int]:
 
     if teacher_id is None or frame_decode_id is None:
         raise RuntimeError("VOICEVOXが歌唱合成(singing_teacher/frame_decode)に対応していません")
+    logger.debug("Resolved song synthesis styles: teacher_id=%d, frame_decode_id=%d", teacher_id, frame_decode_id)
     return teacher_id, frame_decode_id
 
 
@@ -373,7 +374,16 @@ async def synthesize_song(phrases: list[str], out_path: Path) -> list[tuple[str,
             params={"speaker": teacher_id},
             json=score,
         )
-        query_res.raise_for_status()
+        try:
+            query_res.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "sing_frame_audio_query failed with status %d for speaker %d; response: %s",
+                e.response.status_code,
+                teacher_id,
+                e.response.text[:500] if hasattr(e.response, "text") else str(e),
+            )
+            raise
         frame_query = query_res.json()
 
         # ナレーション音声パイプラインの出力(24000Hz・モノラル)に合わせる
@@ -386,7 +396,16 @@ async def synthesize_song(phrases: list[str], out_path: Path) -> list[tuple[str,
             params={"speaker": frame_decode_id},
             json=frame_query,
         )
-        synth_res.raise_for_status()
+        try:
+            synth_res.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "frame_synthesis failed with status %d for speaker %d; response: %s",
+                e.response.status_code,
+                frame_decode_id,
+                e.response.text[:500] if hasattr(e.response, "text") else str(e),
+            )
+            raise
 
     out_path.write_bytes(synth_res.content)
     return phrase_timings(phrases)
