@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from app.services import song
@@ -119,3 +121,68 @@ class TestPhraseTimings:
     def test_wrong_phrase_count_raises(self):
         with pytest.raises(ValueError):
             song.phrase_timings(["ひとつだけ"])
+
+
+def _mock_client_with(response=None, side_effect=None):
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response, side_effect=side_effect)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
+
+
+class TestCheckSongSupport:
+    def setup_method(self):
+        song._song_support_cache = None
+
+    def teardown_method(self):
+        song._song_support_cache = None
+
+    @pytest.mark.asyncio
+    async def test_true_result_is_cached_across_calls(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = [
+            {
+                "styles": [
+                    {"type": "singing_teacher", "id": 6000},
+                    {"type": "frame_decode", "id": 3061},
+                ]
+            }
+        ]
+        client = _mock_client_with(response=response)
+
+        with patch("app.services.song.httpx.AsyncClient", return_value=client) as ctor:
+            first = await song.check_song_support()
+            second = await song.check_song_support()
+
+        assert first is True
+        assert second is True
+        assert ctor.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_style_is_not_cached_and_retries(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = [{"styles": [{"type": "talk", "id": 3}]}]
+        client = _mock_client_with(response=response)
+
+        with patch("app.services.song.httpx.AsyncClient", return_value=client) as ctor:
+            first = await song.check_song_support()
+            second = await song.check_song_support()
+
+        assert first is False
+        assert second is False
+        assert ctor.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exception_is_not_cached_and_retries(self):
+        client = _mock_client_with(side_effect=RuntimeError("connection refused"))
+
+        with patch("app.services.song.httpx.AsyncClient", return_value=client) as ctor:
+            first = await song.check_song_support()
+            second = await song.check_song_support()
+
+        assert first is False
+        assert second is False
+        assert ctor.call_count == 2
