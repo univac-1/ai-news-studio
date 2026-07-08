@@ -153,6 +153,36 @@ def normalize_lyric_text(text: str) -> str:
     return _LYRIC_PUNCT_RE.sub("", text.strip())
 
 
+# かな1文字 → 母音のひらがな。長音符「ー」をノート歌詞に変換するときに使う。
+_VOWEL_BY_KANA: dict[str, str] = {}
+for _vowel, _kana_chars in {
+    "あ": "あかがさざただなはばぱまやらわゃぁアカガサザタダナハバパマヤラワャァヮゎ",
+    "い": "いきぎしじちぢにひびぴみりぃイキギシジチヂニヒビピミリィ",
+    "う": "うくぐすずつづぬふぶぷむゆるゅぅウクグスズツヅヌフブプムユルュゥヴ",
+    "え": "えけげせぜてでねへべぺめれぇエケゲセゼテデネヘベペメレェ",
+    "お": "おこごそぞとどのほぼぽもよろをょぉオコゴソゾトドノホボポモヨロヲョォ",
+}.items():
+    for _ch in _kana_chars:
+        _VOWEL_BY_KANA[_ch] = _vowel
+
+
+def _note_lyric(mora: str, prev_lyric: str | None) -> str:
+    """ノートに載せる歌詞を返す。
+
+    長音符「ー」はVOICEVOXの歌唱合成が歌詞として受け付けない
+    (mora_kana_to_mora_phonemesに存在せず400になる)ため、
+    直前ノートの歌詞の母音に置き換える(えー→ええ、ニュー→ニュう)。
+    """
+    if mora != "ー":
+        return mora
+    if prev_lyric:
+        vowel = _VOWEL_BY_KANA.get(prev_lyric[-1])
+        if vowel:
+            return vowel
+    # フレーズ先頭のーなど母音を解決できない場合の保険
+    return "あ"
+
+
 def assign_lyrics_to_notes(phrase_text: str, phrase: SongPhrase) -> list[dict]:
     """フレーズの歌詞テキストをノート列に割り当て、VOICEVOXのノート形式で返す。"""
     moras = split_moras(phrase_text)
@@ -160,9 +190,12 @@ def assign_lyrics_to_notes(phrase_text: str, phrase: SongPhrase) -> list[dict]:
         raise ValueError(
             f"モーラ数が一致しません: text={len(moras)}モーラ, notes={len(phrase.notes)}ノート"
         )
+    lyrics: list[str] = []
+    for mora in moras:
+        lyrics.append(_note_lyric(mora, lyrics[-1] if lyrics else None))
     return [
-        {"key": note.key, "frame_length": note.frame_length, "lyric": mora}
-        for note, mora in zip(phrase.notes, moras)
+        {"key": note.key, "frame_length": note.frame_length, "lyric": lyric}
+        for note, lyric in zip(phrase.notes, lyrics)
     ]
 
 

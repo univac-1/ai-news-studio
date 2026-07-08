@@ -63,6 +63,29 @@ class TestAssignLyricsToNotes:
         with pytest.raises(ValueError):
             song.assign_lyrics_to_notes("たりない", phrase)
 
+    def test_long_vowel_mark_is_replaced_with_preceding_vowel(self):
+        # VOICEVOXの歌唱合成は「ー」を歌詞として受け付けないため、
+        # 直前モーラの母音に置き換える(えー→ええ)
+        phrase = song.MELODY_TEMPLATE[0]
+        notes = song.assign_lyrics_to_notes("えーあいのはなし", phrase)
+        assert [n["lyric"] for n in notes] == ["え", "え", "あ", "い", "の", "は", "な", "し"]
+
+    def test_long_vowel_mark_after_youon_uses_youon_vowel(self):
+        # ニュー → ニュ + う (拗音ゅの母音はu)
+        phrase = song.MELODY_TEMPLATE[0]
+        notes = song.assign_lyrics_to_notes("ニューすをきくのだ", phrase)
+        assert [n["lyric"] for n in notes] == ["ニュ", "う", "す", "を", "き", "く", "の", "だ"]
+
+    def test_consecutive_long_vowel_marks(self):
+        # コーー → コ + お + お (2つ目のーは置き換え後の母音を引き継ぐ)
+        phrase = song.MELODY_TEMPLATE[0]
+        notes = song.assign_lyrics_to_notes("コーーひをのむよ", phrase)
+        assert [n["lyric"] for n in notes] == ["コ", "お", "お", "ひ", "を", "の", "む", "よ"]
+
+    def test_fallback_lyrics_produce_no_long_vowel_lyric(self):
+        score = song.build_score(song.FALLBACK_LYRICS)
+        assert all(note["lyric"] != "ー" for note in score["notes"])
+
 
 class TestBuildScore:
     def test_leading_and_trailing_rests_present(self):
