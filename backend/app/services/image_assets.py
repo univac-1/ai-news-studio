@@ -66,6 +66,28 @@ _SEGMENT_ILLUSTRATION_PROMPT = (
 )
 
 
+# ずんだもんニュースソング(歌コーナー)スライドの背景。歌詞は下半分中心の帯に
+# 描画されるため、中央帯〜下部は暗めでうるさくない構図を求めている。
+_SONG_BG_PROMPT = (
+    "A vibrant, completely wordless music-video key visual for a Japanese tech-news "
+    "YouTube segment's concert-stage opening theme song.\n\n"
+    "This week's AI news theme for subtle inspiration:\n{topic}\n\n"
+    "Depict an energetic pop-concert / stage-live atmosphere: a dark navy base, sweeping "
+    "neon spotlights, glowing music notes drifting in the air, laser beams, light-particle "
+    "confetti, and futuristic tech accents (glowing circuit trails, holographic panels) "
+    "that hint at the AI news theme above without depicting any literal news scene.\n\n"
+    "Composition: keep the vertical center band and the lower third of the frame relatively "
+    "dark, empty and uncluttered (soft dark gradient, no bright hotspots or busy detail) "
+    "because large lyric text will be overlaid there later. Concentrate the brightest "
+    "lights and detail toward the top and side edges of the frame. 16:9 aspect ratio.\n\n"
+    "Style and lighting: photoreal/3D-render concert lighting, vivid electric blue, magenta, "
+    "cyan and pink neon accents on a very dark navy background, high contrast, dynamic "
+    "energy, premium and modern.\n\n"
+    "Strictly forbidden: any text, letters, numbers, typography, captions, subtitles, logos, "
+    "watermarks, user interface, screenshots, people, faces, cartoon characters, mascots."
+)
+
+
 @dataclass
 class ThemeImages:
     thumbnail: Image.Image | None = None
@@ -150,6 +172,21 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
         _THUMBNAIL_BG_PROMPT.format(topic=_thumbnail_topic(draft)),
     )
     return ThemeImages(thumbnail_bg=thumbnail_bg)
+
+
+async def generate_song_background(draft: VideoPlanDraft) -> Image.Image | None:
+    """ずんだもんニュースソング(歌コーナー)スライド用のミュージックビデオ風背景を生成する。
+
+    GEMINI_PROJECT未設定・IMAGE_GEN_ENABLED=False・生成失敗時はNoneを返し、
+    呼び出し側はローカルのダーク固定背景にフォールバックする。
+    """
+    if not settings.IMAGE_GEN_ENABLED or not settings.GEMINI_PROJECT:
+        return None
+
+    return await _fetch_image(
+        settings.IMAGE_GEN_SLIDE_MODEL,
+        _SONG_BG_PROMPT.format(topic=_thumbnail_topic(draft)),
+    )
 
 
 async def generate_segment_images(segments: list[VideoSegment]) -> dict[int, Image.Image]:

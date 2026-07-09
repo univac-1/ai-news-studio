@@ -16,7 +16,12 @@ from ..schemas.draft import SegmentVisual, VideoPlanDraft, VideoSegment
 from ..schemas.video import ReviewReport, VideoArtifact
 from .categorize import CategoryStyle, category_style
 from .generate_weekly_video_plan import contains_japanese
-from .image_assets import ThemeImages, generate_segment_images, generate_theme_images
+from .image_assets import (
+    ThemeImages,
+    generate_segment_images,
+    generate_song_background,
+    generate_theme_images,
+)
 from .kana_reading import build_reading_map, to_voice_text
 from .song import check_song_support, generate_song_lyrics, synthesize_song
 from .video_review import review_and_retake
@@ -333,9 +338,10 @@ def _format_chapter_time(seconds: float) -> str:
 
 
 def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
-    lines: list[str] = ["0:00 オープニング"]
-    outro_line: str | None = None
-    song_line: str | None = None
+    # スライド列(=時系列順)をそのまま辿って追記するだけで、チャプターは常に
+    # 時刻昇順になる(song は現在フックの直後・オープニングの前にあるため、
+    # 末尾に別枠で追記していた旧実装だと時刻が逆転してしまう)。
+    entries: list[tuple[float, str]] = [(0.0, "オープニング")]
     pending_divider: float | None = None
     for slide, offset in zip(slides, slide_offsets):
         if slide.kind in {"divider", "illustration"}:
@@ -343,16 +349,23 @@ def _build_chapters(slides: list[SlideSpec], slide_offsets: list[float]) -> str:
             pending_divider = offset
         elif slide.kind == "segment":
             start = pending_divider if pending_divider is not None else offset
-            lines.append(f"{_format_chapter_time(start)} {slide.title}")
+            entries.append((start, slide.title))
             pending_divider = None
         elif slide.kind in {"outro", "ranking"}:
-            outro_line = f"{_format_chapter_time(offset)} まとめ（今週の重要度ランキング）"
+            entries.append((offset, "まとめ（今週の重要度ランキング）"))
         elif slide.kind == "song":
-            song_line = f"{_format_chapter_time(offset)} ずんだもんニュースソング"
-    if outro_line:
-        lines.append(outro_line)
-    if song_line:
-        lines.append(song_line)
+            entries.append((offset, "ずんだもんニュースソング"))
+
+    # YouTubeのチャプターは各10秒以上必要で、10秒未満の区間が1つでもあると
+    # 全チャプターが無効化される。直前に採用したチャプターから10秒未満で始まる
+    # エントリはスキップする(例: 〜5秒のフック直後に始まる歌)。
+    lines: list[str] = []
+    last_emitted: float | None = None
+    for seconds, title in entries:
+        if last_emitted is not None and seconds - last_emitted < 10.0:
+            continue
+        lines.append(f"{_format_chapter_time(seconds)} {title}")
+        last_emitted = seconds
     return "\n".join(lines)
 
 
@@ -979,9 +992,16 @@ _SONG_ACCENT = "#f472b6"
 
 
 def _render_song_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
-    """ずんだもんニュースソングのコーナー。共通のダーク背景の上に、タイトル・
-    音符アクセント・歌詞(センタリング)を並べ、右下にずんだもん(happy)を重ねる。"""
-    image = _draw_dark_background()
+    """ずんだもんニュースソングのコーナー。生成済みのミュージックビデオ風背景があれば
+    全画面に敷いて半透明の黒でトーンダウンし、なければ共通のダーク背景を使う。その上に
+    タイトル・音符アクセント・歌詞(センタリング)を並べ、右下にずんだもん(happy)を重ねる。"""
+    if spec.image is not None:
+        image = _cover_crop(spec.image, WIDTH, HEIGHT).convert("RGBA")
+        # 歌詞の可読性を保つため、背景全体に約55%の黒オーバーレイを重ねる
+        dark_overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 140))
+        image = Image.alpha_composite(image, dark_overlay)
+    else:
+        image = _draw_dark_background()
     draw = ImageDraw.Draw(image)
     character_reserve = _character_reserve_width(spec)
     content_width = WIDTH - 280 - character_reserve
@@ -1759,6 +1779,7 @@ def _build_slides(
     draft: VideoPlanDraft,
     segment_images: dict[int, Image.Image] | None = None,
     song_lyrics: list[str] | None = None,
+    song_bg: Image.Image | None = None,
 ) -> list[SlideSpec]:
     segment_images = segment_images or {}
     entries = [
@@ -1772,7 +1793,8 @@ def _build_slides(
     ]
 
     slides: list[SlideSpec] = []
-    # 冒頭は20秒以内: フック(〜5秒) + オープニング(〜15秒)の2枚のみ。
+    # 冒頭はフック(〜5秒) + ずんだもんニュースソング(あれば) + オープニング(〜15秒)の構成。
+    # 歌はフックの直後・オープニングの前に挿入する(フックがなければ歌が先頭になる)。
     # 旧構成の cover(タイトル読み上げ)と intro は廃止し、ラインナップ一覧に統合した。
     if draft.hook:
         slides.append(
@@ -1783,6 +1805,19 @@ def _build_slides(
                 narration=draft.hook,
                 week_label=draft.week_label,
                 narrator="zundamon",
+            )
+        )
+    if song_lyrics:
+        slides.append(
+            SlideSpec(
+                kind="song",
+                title="ずんだもんニュースソング",
+                body="",
+                narration="",
+                week_label=draft.week_label,
+                narrator="zundamon",
+                lyrics=song_lyrics,
+                image=song_bg,
             )
         )
     slides.append(
@@ -1844,18 +1879,6 @@ def _build_slides(
             narrator="zundamon",
         )
     )
-    if song_lyrics:
-        slides.append(
-            SlideSpec(
-                kind="song",
-                title="ずんだもんニュースソング",
-                body="",
-                narration="",
-                week_label=draft.week_label,
-                narrator="zundamon",
-                lyrics=song_lyrics,
-            )
-        )
     return slides
 
 
@@ -2158,6 +2181,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     # 対応していない・歌詞生成/合成に失敗した場合は静かにスキップし、通常の
     # 動画生成を止めない。
     song_lyrics: list[str] | None = None
+    song_bg: Image.Image | None = None
     if settings.SONG_ENABLED:
         try:
             if await check_song_support():
@@ -2170,7 +2194,14 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             logger.exception("song lyrics generation failed; skipping song corner")
             song_lyrics = None
 
-    slides = _build_slides(draft, segment_images, song_lyrics=song_lyrics)
+        if song_lyrics:
+            try:
+                song_bg = await generate_song_background(draft)
+            except Exception:
+                logger.exception("song background generation failed; using dark fallback")
+                song_bg = None
+
+    slides = _build_slides(draft, segment_images, song_lyrics=song_lyrics, song_bg=song_bg)
     reading_map = await build_reading_map(
         [slide.narration for slide in slides if slide.narration]
         + [slide.reaction_line for slide in slides if slide.reaction_line]
