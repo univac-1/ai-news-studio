@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     BGM_FILE: str = ""
     BGM_VOLUME_DB: float = -22.0
     SONG_ENABLED: bool = True
+    # 歌唱ソング(a cappella)にドラム+ベースの伴奏をミックスするかどうか
+    SONG_BACKING_ENABLED: bool = True
+    # 伴奏の音量調整(dB)。負値でボーカルより控えめにする
+    SONG_BACKING_GAIN_DB: float = -11.0
     # 以下はヒントに過ぎず、実行時は /singers を問い合わせて実在するスタイルを優先する
     VOICEVOX_SING_TEACHER_ID: int = 6000
     VOICEVOX_SING_SPEAKER_ID: int = 3061

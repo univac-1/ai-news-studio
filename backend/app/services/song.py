@@ -9,34 +9,39 @@
 import json
 import logging
 import re
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+import numpy as np
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
 from ..core.config import settings
 from ..schemas.draft import VideoPlanDraft
+from .song_backing import render_backing_track
 
 logger = logging.getLogger(__name__)
 
 # VOICEVOXの歌唱合成におけるフレームレート(1秒 = 93.75フレーム)
 FRAMES_PER_SECOND = 93.75
 
-# 120BPM換算の音価(フレーム数)。四分音符 = 60/120秒 = 0.5秒 ≈ 47フレーム
-EIGHTH_FRAMES = 24
-QUARTER_FRAMES = 47
-DOTTED_QUARTER_FRAMES = 70
-HALF_FRAMES = 94
-DOTTED_HALF_FRAMES = 141
-WHOLE_FRAMES = 188
+# 実効テンポ ≒ 140.6BPM (93.75フレーム/秒 ÷ 40フレーム/拍)。
+# すべての音価を8分音符(20フレーム)の整数倍に揃えることで、
+# 伴奏(song_backing)のビートグリッドとボーカルのノート開始位置が完全に一致する。
+EIGHTH_FRAMES = 20
+QUARTER_FRAMES = 40
+DOTTED_QUARTER_FRAMES = 60
+HALF_FRAMES = 80
+DOTTED_HALF_FRAMES = 120
+WHOLE_FRAMES = 160
 
 # 歌い出し前・歌い終わり後の無音(フレーム数)
-LEADING_REST_FRAMES = 47
-TRAILING_REST_FRAMES = 94
+LEADING_REST_FRAMES = 40      # 1拍
+TRAILING_REST_FRAMES = 80     # 2拍
 # フレーズ間の短い無音(フレーム数)
-INTER_PHRASE_REST_FRAMES = 47
+INTER_PHRASE_REST_FRAMES = 20 # 半拍
 
 
 @dataclass(frozen=True)
@@ -240,6 +245,78 @@ def phrase_timings(phrases: list[str]) -> list[tuple[str, float]]:
         frames += INTER_PHRASE_REST_FRAMES if i < last_index else TRAILING_REST_FRAMES
         timings.append((phrase_text, frames / FRAMES_PER_SECOND))
     return timings
+
+
+def _phrase_frame_spans() -> list[tuple[int, int]]:
+    """MELODY_TEMPLATEの各フレーズが占めるフレーム区間(開始, 終了)を返す。
+
+    build_score()と同じ構造(先頭休符→フレーズ→フレーズ間休符→…→末尾休符)をたどって
+    算出する。ノートのframe_lengthは歌詞テキストに依存しないため、歌詞は使わない。
+    """
+    spans: list[tuple[int, int]] = []
+    frame = LEADING_REST_FRAMES
+    last_index = len(MELODY_TEMPLATE) - 1
+    for i, phrase in enumerate(MELODY_TEMPLATE):
+        start = frame
+        end = start + sum(note.frame_length for note in phrase.notes)
+        spans.append((start, end))
+        frame = end + (INTER_PHRASE_REST_FRAMES if i < last_index else 0)
+    return spans
+
+
+def _mix_backing_into_wav(out_path: Path) -> None:
+    """out_pathのa cappella wavへドラム+ベースの伴奏(song_backing)をミックスして上書きする。
+
+    16bit/モノラル以外のwavの場合は警告してスキップする(a cappellaのまま維持)。
+    VOICEVOX呼び出しに依存しないため、単体でテストできる。
+    settings.SONG_BACKING_ENABLEDがFalseの場合は何もしない(synthesize_song側でも
+    同条件を見ているが、この関数を直接呼んでも安全なように二重にガードする)。
+    """
+    if not settings.SONG_BACKING_ENABLED:
+        return
+
+    with wave.open(str(out_path), "rb") as wf:
+        n_channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        sample_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+
+    if n_channels != 1 or sample_width != 2:
+        logger.warning(
+            "song backing: expected 16bit mono wav but got channels=%d, sample_width=%d; "
+            "skipping mix (keeping a cappella)",
+            n_channels,
+            sample_width,
+        )
+        return
+
+    vocal_int16 = np.frombuffer(raw, dtype=np.int16)
+    total_samples = len(vocal_int16)
+    vocal_float = vocal_int16.astype(np.float32) / 32768.0
+
+    backing = render_backing_track(
+        total_samples=total_samples,
+        sample_rate=sample_rate,
+        frames_per_second=FRAMES_PER_SECOND,
+        eighth_frames=EIGHTH_FRAMES,
+        phrase_frame_spans=_phrase_frame_spans(),
+    )
+
+    gain = 10 ** (settings.SONG_BACKING_GAIN_DB / 20)
+    mixed = vocal_float + backing * gain
+
+    peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
+    if peak > 0.99:
+        mixed = np.tanh(mixed)
+
+    mixed_int16 = (np.clip(mixed, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+    with wave.open(str(out_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(mixed_int16.tobytes())
 
 
 def _build_lyrics_prompt(headlines: str, budgets: tuple[int, ...], feedback: str) -> str:
@@ -527,4 +604,11 @@ async def synthesize_song(phrases: list[str], out_path: Path) -> list[tuple[str,
             raise
 
     out_path.write_bytes(synth_res.content)
+
+    if settings.SONG_BACKING_ENABLED:
+        try:
+            _mix_backing_into_wav(out_path)
+        except Exception:
+            logger.exception("song backing mix failed; keeping a cappella wav")
+
     return phrase_timings(phrases)
