@@ -242,13 +242,76 @@ def phrase_timings(phrases: list[str]) -> list[tuple[str, float]]:
     return timings
 
 
+def _build_lyrics_prompt(headlines: str, budgets: tuple[int, ...], feedback: str) -> str:
+    return (
+        "あなたは「ずんだもん」というキャラクターです。"
+        "以下は今週のAIニュースの見出し一覧です。\n"
+        f"{headlines}\n\n"
+        "これらの内容を踏まえて、ずんだもんニュースソングの歌詞を4フレーズ作ってください。\n"
+        "この曲は番組のオープニングテーマ曲のように、聞いた人が思わず口ずさみたくなる"
+        "キャッチーで元気な曲にしてください。\n"
+        "今週の実際のニュースに登場した製品名・サービス名・企業名を、できるだけかな表記"
+        "(カタカナ読み)で歌詞に織り込み、聞くだけで今週何が話題だったか伝わるようにしてください。\n"
+        "口調: 一人称は「ボク」、できるだけ語尾に「〜のだ」「〜なのだ」を使う、"
+        "ずんだもんらしい明るく元気な口調を保つこと。\n"
+        "表記: ひらがな・カタカナ・長音符(ー)のみを使うこと。漢字・英字・句読点は一切使わないこと。\n"
+        f"モーラ数(拍数)は各フレーズ厳守: "
+        f"1フレーズ目{budgets[0]}モーラ、2フレーズ目{budgets[1]}モーラ、"
+        f"3フレーズ目{budgets[2]}モーラ、4フレーズ目{budgets[3]}モーラ。\n"
+        "モーラの数え方: 拗音(ゃゅょぁぃぅぇぉゎ等)は直前の文字と合わせて1モーラ、"
+        "「ん」「っ」「ー」(長音符)はそれぞれ単独で1モーラとして数えてください。\n"
+        "各フレーズにつき、モーラ数条件を満たす言い回しの候補を3つずつ考えてください"
+        "(内容が近くても構わないので、言い回しを変えてモーラ数を厳守しやすくしてください)。\n"
+        f"{feedback}"
+        '出力はJSONのみ: {"phrases": '
+        '[["候補1","候補2","候補3"], ["候補1","候補2","候補3"], '
+        '["候補1","候補2","候補3"], ["候補1","候補2","候補3"]]}\n'
+        "説明は不要です。JSONのみ返してください。"
+    )
+
+
+def _select_candidate(raw_candidates: object, budget: int) -> tuple[str | None, list[str]]:
+    """1スロット分の候補群から、モーラ数条件を満たす最初の候補を選ぶ。
+
+    戻り値は (採用した歌詞 or None, 却下理由のリスト)。
+    """
+    if isinstance(raw_candidates, str):
+        candidates = [raw_candidates]
+    elif isinstance(raw_candidates, list):
+        candidates = [str(c) for c in raw_candidates]
+    else:
+        return None, ["候補が配列/文字列のいずれでもありません。"]
+
+    rejections: list[str] = []
+    for candidate in candidates:
+        cleaned = normalize_lyric_text(candidate)
+        try:
+            actual = count_moras(cleaned)
+        except ValueError:
+            rejections.append(f"「{cleaned}」はかな以外の文字を含んでいます。")
+            continue
+        if actual != budget:
+            rejections.append(f"「{cleaned}」は{actual}モーラですが{budget}モーラ必要です。")
+            continue
+        return cleaned, rejections
+
+    return None, rejections
+
+
 async def generate_song_lyrics(draft: VideoPlanDraft) -> list[str]:
     """今週のAIニュース見出しから、ずんだもんニュースソングの歌詞をGeminiで生成する。
 
-    GEMINI_PROJECT未設定・生成失敗・最終的にモーラ数が合わない場合はFALLBACK_LYRICSを返す。
+    フレーズごとに3つの候補をGeminiへ求め、モーラ数条件を満たす最初の候補を採用する。
+    最大5回リトライし、未解決のスロットのみ次のリクエストで再挑戦する。
+    5回試しても埋まらないスロットはFALLBACK_LYRICSの該当フレーズで個別に補い、
+    Geminiから1つも得られなかった場合は従来通りFALLBACK_LYRICS全体を返す。
+    GEMINI_PROJECT未設定時もFALLBACK_LYRICSを返す。
     """
     if not settings.GEMINI_PROJECT:
         return FALLBACK_LYRICS
+
+    budgets = PHRASE_MORA_BUDGETS
+    best: list[str | None] = [None] * len(budgets)
 
     try:
         vertexai.init(project=settings.GEMINI_PROJECT, location=settings.GEMINI_LOCATION)
@@ -257,57 +320,80 @@ async def generate_song_lyrics(draft: VideoPlanDraft) -> list[str]:
         headlines = "\n".join(
             f"- {seg.title_ja or seg.headline}" for seg in draft.segments
         )
-        budgets = PHRASE_MORA_BUDGETS
 
         feedback = ""
-        for _ in range(3):
-            prompt = (
-                "あなたは「ずんだもん」というキャラクターです。"
-                "以下は今週のAIニュースの見出し一覧です。\n"
-                f"{headlines}\n\n"
-                "これらの内容を踏まえて、ずんだもんニュースソングの歌詞を4フレーズ作ってください。\n"
-                "口調: 一人称は「ボク」、できるだけ語尾に「〜のだ」「〜なのだ」を使う、明るく元気な口調。\n"
-                "表記: ひらがな・カタカナ・長音符(ー)のみを使うこと。漢字・英字・句読点は一切使わないこと。\n"
-                f"モーラ数(拍数)は各フレーズ厳守: "
-                f"1フレーズ目{budgets[0]}モーラ、2フレーズ目{budgets[1]}モーラ、"
-                f"3フレーズ目{budgets[2]}モーラ、4フレーズ目{budgets[3]}モーラ。\n"
-                "拗音(ゃゅょぁぃぅぇぉゎ等)は直前の文字と合わせて1モーラ、"
-                "「ん」「っ」「ー」はそれぞれ1モーラとして数えてください。\n"
-                f"{feedback}"
-                '出力はJSONのみ: {"phrases": ["...", "...", "...", "..."]}\n'
-                "説明は不要です。JSONのみ返してください。"
-            )
+        for attempt in range(1, 6):
+            unsolved = [i for i, v in enumerate(best) if v is None]
+            if not unsolved:
+                break
 
-            response = await model.generate_content_async(prompt)
-            text = response.text.strip()
-            text = re.sub(r"^```[a-z]*\n?", "", text)
-            text = re.sub(r"\n?```$", "", text)
-            result = json.loads(text.strip())
+            prompt = _build_lyrics_prompt(headlines, budgets, feedback)
 
-            raw_phrases = result.get("phrases")
-            if not isinstance(raw_phrases, list) or len(raw_phrases) != len(budgets):
-                feedback = "フレーズは4つのJSON配列で返してください。\n"
+            try:
+                response = await model.generate_content_async(prompt)
+                text = response.text.strip()
+                text = re.sub(r"^```[a-z]*\n?", "", text)
+                text = re.sub(r"\n?```$", "", text)
+                result = json.loads(text.strip())
+            except Exception:
+                logger.warning(
+                    "song lyric generation: attempt %d request/parse failed", attempt,
+                    exc_info=True,
+                )
+                feedback = "直前の出力はJSONとして解析できませんでした。JSONのみを返してください。\n"
                 continue
 
-            cleaned = [normalize_lyric_text(str(phrase)) for phrase in raw_phrases]
+            raw_phrases = result.get("phrases") if isinstance(result, dict) else None
+            if not isinstance(raw_phrases, list) or len(raw_phrases) != len(budgets):
+                feedback = (
+                    "フレーズは4つのJSON配列(各要素はさらに候補文字列を3つ持つ配列)で"
+                    "返してください。\n"
+                )
+                continue
 
             mismatches: list[str] = []
-            for i, (phrase_text, budget) in enumerate(zip(cleaned, budgets), start=1):
-                try:
-                    actual = count_moras(phrase_text)
-                except ValueError:
-                    mismatches.append(f"フレーズ{i}はかな以外の文字を含んでいます。")
+            for i, raw_candidates in enumerate(raw_phrases):
+                if best[i] is not None:
                     continue
-                if actual != budget:
-                    mismatches.append(f"フレーズ{i}は{actual}モーラですが{budget}モーラ必要です。")
+                selected, rejections = _select_candidate(raw_candidates, budgets[i])
+                if selected is not None:
+                    best[i] = selected
+                    continue
+                detail = " / ".join(rejections) if rejections else "候補が得られませんでした。"
+                mismatches.append(f"フレーズ{i + 1}({budgets[i]}モーラ必要): {detail}")
 
             if not mismatches:
-                return cleaned
+                break
 
-            feedback = "前回の出力の問題点:\n" + "\n".join(mismatches) + "\n"
+            feedback = (
+                "前回の出力でまだ解決できていないフレーズがあります。該当フレーズのみ、"
+                "新しい候補を3つずつ考え直してください:\n" + "\n".join(mismatches) + "\n"
+                "モーラの数え方(再掲): 拗音(ゃゅょぁぃぅぇぉゎ等)は直前の文字と合わせて"
+                "1モーラ、「ん」「っ」「ー」はそれぞれ単独で1モーラです。\n"
+            )
 
-        return FALLBACK_LYRICS
+        solved_count = sum(1 for v in best if v is not None)
+        if solved_count == 0:
+            logger.warning("song lyric generation: no phrase resolved; using FALLBACK_LYRICS entirely")
+            return FALLBACK_LYRICS
+
+        fallback_slots = [i for i, v in enumerate(best) if v is None]
+        final_lyrics = [
+            v if v is not None else FALLBACK_LYRICS[i] for i, v in enumerate(best)
+        ]
+        if fallback_slots:
+            logger.warning(
+                "song lyric generation: slots %s fell back to FALLBACK_LYRICS", fallback_slots
+            )
+        logger.info(
+            "song lyrics generated: %r (%d/%d phrases from Gemini)",
+            final_lyrics,
+            len(budgets) - len(fallback_slots),
+            len(budgets),
+        )
+        return final_lyrics
     except Exception:
+        logger.exception("song lyric generation failed; falling back to FALLBACK_LYRICS")
         return FALLBACK_LYRICS
 
 

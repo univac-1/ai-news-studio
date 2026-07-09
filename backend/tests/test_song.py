@@ -1,7 +1,9 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.schemas.draft import VideoPlanDraft, VideoSegment
 from app.services import song
 
 
@@ -209,3 +211,197 @@ class TestCheckSongSupport:
         assert first is False
         assert second is False
         assert ctor.call_count == 2
+
+
+def _draft() -> VideoPlanDraft:
+    return VideoPlanDraft(
+        title="今週のAIニュース",
+        week_label="2026年7月第1週",
+        thumbnail_text="AI速報",
+        intro="今週も始まるのだ",
+        segments=[
+            VideoSegment(
+                number=1,
+                headline="Example AI product launched",
+                summary="summary",
+                impact="impact",
+                action="action",
+                slide_title="slide",
+                narration="narration",
+                title_ja="サンプルAI製品が登場",
+            ),
+        ],
+        outro="また来週なのだ",
+        slide_outline=[],
+        narration_script="",
+        description="",
+        hashtags=[],
+        reference_urls=[],
+        total_items=1,
+        generated_at="2026-07-07T00:00:00Z",
+    )
+
+
+def _model_with_responses(payloads: list[str]) -> MagicMock:
+    """generate_content_asyncがpayloadsを順に返すモックモデル。
+    要素が尽きたら最後の要素を繰り返す(何度リトライしても同じ応答を返すテスト用)。"""
+    model = MagicMock()
+    state = {"i": 0}
+
+    async def _generate(prompt):
+        i = min(state["i"], len(payloads) - 1)
+        state["i"] += 1
+        return MagicMock(text=payloads[i])
+
+    model.generate_content_async = AsyncMock(side_effect=_generate)
+    return model
+
+
+class TestGenerateSongLyrics:
+    def _patched(self, model: MagicMock):
+        return (
+            patch.object(song.settings, "GEMINI_PROJECT", "test-project"),
+            patch.object(song.vertexai, "init"),
+            patch.object(song, "GenerativeModel", return_value=model),
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_slots_solved_on_first_attempt(self):
+        payload = json.dumps(
+            {
+                "phrases": [
+                    ["あたらしいぎじゅつ", "だみー1", "だみー2"],
+                    ["にゅーすがいっぱい", "だみー1", "だみー2"],
+                    ["びっぐなたいむす", "だみー1", "だみー2"],
+                    ["すごいのだよ", "だみー1", "だみー2"],
+                ]
+            },
+            ensure_ascii=False,
+        )
+        model = _model_with_responses([payload])
+        p1, p2, p3 = self._patched(model)
+
+        with p1, p2, p3:
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result == [
+            "あたらしいぎじゅつ",
+            "にゅーすがいっぱい",
+            "びっぐなたいむす",
+            "すごいのだよ",
+        ]
+        assert model.generate_content_async.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_candidate_selection_skips_invalid_candidates(self):
+        # 各スロットとも先頭候補は不正(モーラ数不足 or かな以外の文字)で、
+        # 2番目の候補だけがモーラ数条件を満たす。2番目が採用されることを確認する。
+        payload = json.dumps(
+            {
+                "phrases": [
+                    ["ダメ", "あたらしいぎじゅつ", "だみー"],
+                    ["AIニュース", "にゅーすがいっぱい", "だみー"],
+                    ["みじかい", "びっぐなたいむす", "だみー"],
+                    ["ながすぎるふれーず", "すごいのだよ", "だみー"],
+                ]
+            },
+            ensure_ascii=False,
+        )
+        model = _model_with_responses([payload])
+        p1, p2, p3 = self._patched(model)
+
+        with p1, p2, p3:
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result == [
+            "あたらしいぎじゅつ",
+            "にゅーすがいっぱい",
+            "びっぐなたいむす",
+            "すごいのだよ",
+        ]
+        assert model.generate_content_async.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unsolved_slot_falls_back_others_kept(self):
+        # スロット1(0-indexで1番目)だけは何度リトライしても不正な候補しか
+        # 返ってこないケース。他の3スロットはGeminiの結果を維持しつつ、
+        # スロット1だけFALLBACK_LYRICSで個別に補われることを確認する。
+        payload = json.dumps(
+            {
+                "phrases": [
+                    ["あたらしいぎじゅつ", "だみー1", "だみー2"],
+                    ["だめ", "だめだめ", "ぜんぶだめ"],
+                    ["びっぐなたいむす", "だみー1", "だみー2"],
+                    ["すごいのだよ", "だみー1", "だみー2"],
+                ]
+            },
+            ensure_ascii=False,
+        )
+        model = _model_with_responses([payload])
+        p1, p2, p3 = self._patched(model)
+
+        with p1, p2, p3:
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result[0] == "あたらしいぎじゅつ"
+        assert result[1] == song.FALLBACK_LYRICS[1]
+        assert result[2] == "びっぐなたいむす"
+        assert result[3] == "すごいのだよ"
+        # 未解決スロットが残る限り、上限の5回までリトライする
+        assert model.generate_content_async.call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_plain_string_phrases_still_accepted(self):
+        # 旧フォーマット(候補配列ではなく単一文字列)も引き続き受理する
+        payload = json.dumps(
+            {
+                "phrases": [
+                    "あたらしいぎじゅつ",
+                    "にゅーすがいっぱい",
+                    "びっぐなたいむす",
+                    "すごいのだよ",
+                ]
+            },
+            ensure_ascii=False,
+        )
+        model = _model_with_responses([payload])
+        p1, p2, p3 = self._patched(model)
+
+        with p1, p2, p3:
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result == [
+            "あたらしいぎじゅつ",
+            "にゅーすがいっぱい",
+            "びっぐなたいむす",
+            "すごいのだよ",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_returns_fallback_when_gemini_project_unset(self):
+        with patch.object(song.settings, "GEMINI_PROJECT", ""):
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result == song.FALLBACK_LYRICS
+
+    @pytest.mark.asyncio
+    async def test_all_slots_unresolved_returns_full_fallback(self):
+        payload = json.dumps(
+            {
+                "phrases": [
+                    ["だめ", "だめだめ", "ぜんぶだめ"],
+                    ["だめ", "だめだめ", "ぜんぶだめ"],
+                    ["だめ", "だめだめ", "ぜんぶだめ"],
+                    ["だめ", "だめだめ", "ぜんぶだめ"],
+                ]
+            },
+            ensure_ascii=False,
+        )
+        model = _model_with_responses([payload])
+        p1, p2, p3 = self._patched(model)
+
+        with p1, p2, p3:
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result == song.FALLBACK_LYRICS
+        assert model.generate_content_async.call_count == 5
