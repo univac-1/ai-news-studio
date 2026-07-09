@@ -1,6 +1,8 @@
 import json
+import wave
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 from app.schemas.draft import VideoPlanDraft, VideoSegment
@@ -87,6 +89,101 @@ class TestAssignLyricsToNotes:
     def test_fallback_lyrics_produce_no_long_vowel_lyric(self):
         score = song.build_score(song.FALLBACK_LYRICS)
         assert all(note["lyric"] != "ー" for note in score["notes"])
+
+
+class TestNoteConstantsGridAligned:
+    """伴奏(song_backing)のビートグリッドと一致させるため、すべての音価・休符が
+    EIGHTH_FRAMESの整数倍であることを保証する回帰テスト。"""
+
+    def test_named_constants_are_multiples_of_eighth(self):
+        constants = [
+            song.EIGHTH_FRAMES,
+            song.QUARTER_FRAMES,
+            song.DOTTED_QUARTER_FRAMES,
+            song.HALF_FRAMES,
+            song.DOTTED_HALF_FRAMES,
+            song.WHOLE_FRAMES,
+            song.LEADING_REST_FRAMES,
+            song.TRAILING_REST_FRAMES,
+            song.INTER_PHRASE_REST_FRAMES,
+        ]
+        for value in constants:
+            assert value % song.EIGHTH_FRAMES == 0
+
+    def test_every_melody_note_is_a_multiple_of_eighth(self):
+        for phrase in song.MELODY_TEMPLATE:
+            for note in phrase.notes:
+                assert note.frame_length % song.EIGHTH_FRAMES == 0
+
+
+def _write_mono16_wav(
+    path, seconds: float = 2.0, sample_rate: int = 24000, freq: float = 440.0, amplitude: float = 0.05
+) -> np.ndarray:
+    """テスト用の16bitモノラルwav(静かな440Hzサイン波)を書き出し、サンプル列を返す。"""
+    n = int(seconds * sample_rate)
+    t = np.arange(n) / sample_rate
+    samples = (amplitude * np.sin(2 * np.pi * freq * t) * 32767).astype(np.int16)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(samples.tobytes())
+    return samples
+
+
+class TestMixBackingIntoWav:
+    def test_mixes_backing_and_preserves_format(self, tmp_path):
+        path = tmp_path / "song.wav"
+        original = _write_mono16_wav(path)
+
+        song._mix_backing_into_wav(path)
+
+        with wave.open(str(path), "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 24000
+            n_frames = wf.getnframes()
+            mixed = np.frombuffer(wf.readframes(n_frames), dtype=np.int16)
+
+        assert n_frames == len(original)
+        assert not np.array_equal(mixed, original)
+
+    def test_handles_arbitrary_length_not_tied_to_real_score(self, tmp_path):
+        # 実際のスコア長(1600フレーム相当)に一致しない任意の長さでも動作すること
+        path = tmp_path / "short.wav"
+        original = _write_mono16_wav(path, seconds=0.37)
+
+        song._mix_backing_into_wav(path)
+
+        with wave.open(str(path), "rb") as wf:
+            assert wf.getsampwidth() == 2
+            assert wf.getnchannels() == 1
+            assert wf.getnframes() == len(original)
+
+    def test_skips_mixing_when_disabled(self, tmp_path):
+        path = tmp_path / "song.wav"
+        _write_mono16_wav(path)
+        original_bytes = path.read_bytes()
+
+        with patch.object(song.settings, "SONG_BACKING_ENABLED", False):
+            song._mix_backing_into_wav(path)
+
+        assert path.read_bytes() == original_bytes
+
+    def test_skips_mixing_when_not_mono16(self, tmp_path, caplog):
+        path = tmp_path / "stereo.wav"
+        n = 100
+        samples = np.zeros(n * 2, dtype=np.int16)
+        with wave.open(str(path), "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(samples.tobytes())
+        original_bytes = path.read_bytes()
+
+        song._mix_backing_into_wav(path)
+
+        assert path.read_bytes() == original_bytes
 
 
 class TestBuildScore:
