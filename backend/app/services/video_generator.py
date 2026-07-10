@@ -989,14 +989,32 @@ def _render_illustration_slide(spec: SlideSpec, path: Path, compact: bool = Fals
 
 
 _SONG_ACCENT = "#f472b6"
+_SONG_ACCENT_DIM = "#9d5470"
 
 
-def _render_song_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
+def _render_song_slide(
+    spec: SlideSpec,
+    path: Path,
+    compact: bool = False,
+    highlight_index: int | None = None,
+    zoom: float = 1.0,
+) -> None:
     """ずんだもんニュースソングのコーナー。生成済みのミュージックビデオ風背景があれば
     全画面に敷いて半透明の黒でトーンダウンし、なければ共通のダーク背景を使う。その上に
-    タイトル・音符アクセント・歌詞(センタリング)を並べ、右下にずんだもん(happy)を重ねる。"""
+    タイトル・音符アクセント・歌詞(センタリング)を並べ、右下にずんだもん(happy)を重ねる。
+
+    highlight_index が指定されている場合は、カラオケ風にその行だけ通常の見た目(白・太字)
+    で表示し、他の行は淡色にトーンダウンする(Noneなら全行が通常表示、既存呼び出し元との
+    互換を保つ)。zoomはspec.imageのMV背景をズームインする倍率(1.0で従来通り)。"""
     if spec.image is not None:
-        image = _cover_crop(spec.image, WIDTH, HEIGHT).convert("RGBA")
+        if zoom != 1.0:
+            crop_w, crop_h = round(WIDTH * zoom), round(HEIGHT * zoom)
+            zoomed = _cover_crop(spec.image, crop_w, crop_h)
+            left, top = (crop_w - WIDTH) // 2, (crop_h - HEIGHT) // 2
+            background = zoomed.crop((left, top, left + WIDTH, top + HEIGHT))
+        else:
+            background = _cover_crop(spec.image, WIDTH, HEIGHT)
+        image = background.convert("RGBA")
         # 歌詞の可読性を保つため、背景全体に約55%の黒オーバーレイを重ねる
         dark_overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 140))
         image = Image.alpha_composite(image, dark_overlay)
@@ -1030,11 +1048,16 @@ def _render_song_slide(spec: SlideSpec, path: Path, compact: bool = False) -> No
     # 長い行はフォントを段階的に縮小する(_draw_fittedと同じ考え方)。
     lines = [line for line in spec.lyrics if line] or spec.lyrics
     n = max(len(lines), 1)
+    if highlight_index is not None and not (0 <= highlight_index < len(lines)):
+        highlight_index = None
     top, bottom, gap = 340, 820, 16
     band_h = (bottom - top - gap * (n - 1)) / n
     lyric_base, lyric_min = _compact_base_size(46, compact), 28
     y = top
-    for line in lines:
+    for i, line in enumerate(lines):
+        is_dimmed = highlight_index is not None and i != highlight_index
+        text_fill = _DARK_FAINT if is_dimmed else _DARK_TITLE
+        note_fill = _SONG_ACCENT_DIM if is_dimmed else _SONG_ACCENT
         size = lyric_base
         font = _load_font(size, bold=True)
         w = _text_width(font, line)
@@ -1045,9 +1068,9 @@ def _render_song_slide(spec: SlideSpec, path: Path, compact: bool = False) -> No
         bbox = font.getbbox(line or " ")
         text_h = bbox[3] - bbox[1]
         text_y = y + (band_h - text_h) / 2 - bbox[1]
-        draw.text((content_center - w / 2, text_y), line, font=font, fill=_DARK_TITLE)
+        draw.text((content_center - w / 2, text_y), line, font=font, fill=text_fill)
         note_small = _load_font(30, bold=True)
-        draw.text((content_center - w / 2 - 44, text_y), "♪", font=note_small, fill=_SONG_ACCENT)
+        draw.text((content_center - w / 2 - 44, text_y), "♪", font=note_small, fill=note_fill)
         y += band_h + gap
 
     draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
@@ -2026,6 +2049,27 @@ async def _build_part(
     frames: list[tuple[Path, float]] = [(slide_path, 0.0)]
     if show_reaction_character:
         frames.append((reaction_slide_path, expert_duration))
+
+    if slide.kind == "song" and chunk_durations:
+        # カラオケ風演出: chunk_durationsの各エントリ(先頭は歌い出し前の無音、
+        # 以降は各フレーズ)を時系列にたどり、フレーズごとにハイライト+ズームインした
+        # バリアントをそのフレーズの開始時刻から表示する。reuse_audioのリテイクでも
+        # reuse.chunk_durationsから同じタイムラインを再構築できる(音声・尺は不変)。
+        cumulative = 0.0
+        phrase_index = 0
+        for text, dur, _narrator in chunk_durations:
+            if text:
+                variant_path = slides_dir / f"slide_{index:03}_song_{phrase_index}.png"
+                _render_song_slide(
+                    slide,
+                    variant_path,
+                    compact=compact,
+                    highlight_index=phrase_index,
+                    zoom=1.0 + 0.025 * (phrase_index + 1),
+                )
+                frames.append((variant_path, cumulative))
+                phrase_index += 1
+            cumulative += dur
 
     frame_specs = _build_frame_timeline(frames, part_duration)
 

@@ -55,10 +55,12 @@ class TestCountMoras:
 
 class TestAssignLyricsToNotes:
     def test_happy_path(self):
+        # 長音符「ー」を含まないテキストで、変換なしにそのまま割り当てられることを確認する
         phrase = song.MELODY_TEMPLATE[0]
-        notes = song.assign_lyrics_to_notes("こんしゅうもげんき", phrase)
+        text = "こんしゅうもげんきいっぱい"
+        notes = song.assign_lyrics_to_notes(text, phrase)
         assert len(notes) == len(phrase.notes)
-        assert [n["lyric"] for n in notes] == song.split_moras("こんしゅうもげんき")
+        assert [n["lyric"] for n in notes] == song.split_moras(text)
         assert notes[0]["key"] == phrase.notes[0].key
         assert notes[0]["frame_length"] == phrase.notes[0].frame_length
 
@@ -71,20 +73,26 @@ class TestAssignLyricsToNotes:
         # VOICEVOXの歌唱合成は「ー」を歌詞として受け付けないため、
         # 直前モーラの母音に置き換える(えー→ええ)
         phrase = song.MELODY_TEMPLATE[0]
-        notes = song.assign_lyrics_to_notes("えーあいのはなし", phrase)
-        assert [n["lyric"] for n in notes] == ["え", "え", "あ", "い", "の", "は", "な", "し"]
+        notes = song.assign_lyrics_to_notes("えーあいのはなしをきくよ", phrase)
+        assert [n["lyric"] for n in notes] == [
+            "え", "え", "あ", "い", "の", "は", "な", "し", "を", "き", "く", "よ",
+        ]
 
     def test_long_vowel_mark_after_youon_uses_youon_vowel(self):
         # ニュー → ニュ + う (拗音ゅの母音はu)
         phrase = song.MELODY_TEMPLATE[0]
-        notes = song.assign_lyrics_to_notes("ニューすをきくのだ", phrase)
-        assert [n["lyric"] for n in notes] == ["ニュ", "う", "す", "を", "き", "く", "の", "だ"]
+        notes = song.assign_lyrics_to_notes("ニューすをきいてほしいのだ", phrase)
+        assert [n["lyric"] for n in notes] == [
+            "ニュ", "う", "す", "を", "き", "い", "て", "ほ", "し", "い", "の", "だ",
+        ]
 
     def test_consecutive_long_vowel_marks(self):
         # コーー → コ + お + お (2つ目のーは置き換え後の母音を引き継ぐ)
         phrase = song.MELODY_TEMPLATE[0]
-        notes = song.assign_lyrics_to_notes("コーーひをのむよ", phrase)
-        assert [n["lyric"] for n in notes] == ["コ", "お", "お", "ひ", "を", "の", "む", "よ"]
+        notes = song.assign_lyrics_to_notes("コーーひをたのしくのむよ", phrase)
+        assert [n["lyric"] for n in notes] == [
+            "コ", "お", "お", "ひ", "を", "た", "の", "し", "く", "の", "む", "よ",
+        ]
 
     def test_fallback_lyrics_produce_no_long_vowel_lyric(self):
         score = song.build_score(song.FALLBACK_LYRICS)
@@ -114,6 +122,22 @@ class TestNoteConstantsGridAligned:
         for phrase in song.MELODY_TEMPLATE:
             for note in phrase.notes:
                 assert note.frame_length % song.EIGHTH_FRAMES == 0
+
+    def test_every_melody_note_frame_length_is_a_known_constant(self):
+        known = {
+            song.EIGHTH_FRAMES,
+            song.QUARTER_FRAMES,
+            song.DOTTED_QUARTER_FRAMES,
+            song.HALF_FRAMES,
+            song.DOTTED_HALF_FRAMES,
+            song.WHOLE_FRAMES,
+        }
+        for phrase in song.MELODY_TEMPLATE:
+            for note in phrase.notes:
+                assert note.frame_length in known
+
+    def test_phrase_mora_budgets_are_12_12_12_10(self):
+        assert song.PHRASE_MORA_BUDGETS == (12, 12, 12, 10)
 
 
 def _write_mono16_wav(
@@ -367,10 +391,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    ["あたらしいぎじゅつ", "だみー1", "だみー2"],
-                    ["にゅーすがいっぱい", "だみー1", "だみー2"],
-                    ["びっぐなたいむす", "だみー1", "だみー2"],
-                    ["すごいのだよ", "だみー1", "だみー2"],
+                    ["あたらしいぎじゅつがすごい", "だみー1", "だみー2"],
+                    ["にゅーすがたくさんあるのだ", "だみー1", "だみー2"],
+                    ["びっぐなたいむすがきたぞ", "だみー1", "だみー2"],
+                    ["すごいはなしなのだよ", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -382,10 +406,10 @@ class TestGenerateSongLyrics:
             result = await song.generate_song_lyrics(_draft())
 
         assert result == [
-            "あたらしいぎじゅつ",
-            "にゅーすがいっぱい",
-            "びっぐなたいむす",
-            "すごいのだよ",
+            "あたらしいぎじゅつがすごい",
+            "にゅーすがたくさんあるのだ",
+            "びっぐなたいむすがきたぞ",
+            "すごいはなしなのだよ",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -396,10 +420,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    ["ダメ", "あたらしいぎじゅつ", "だみー"],
-                    ["AIニュース", "にゅーすがいっぱい", "だみー"],
-                    ["みじかい", "びっぐなたいむす", "だみー"],
-                    ["ながすぎるふれーず", "すごいのだよ", "だみー"],
+                    ["ダメ", "あたらしいぎじゅつがすごい", "だみー"],
+                    ["AIニュース", "にゅーすがたくさんあるのだ", "だみー"],
+                    ["みじかい", "びっぐなたいむすがきたぞ", "だみー"],
+                    ["ながすぎるふれーずだよ", "すごいはなしなのだよ", "だみー"],
                 ]
             },
             ensure_ascii=False,
@@ -411,10 +435,10 @@ class TestGenerateSongLyrics:
             result = await song.generate_song_lyrics(_draft())
 
         assert result == [
-            "あたらしいぎじゅつ",
-            "にゅーすがいっぱい",
-            "びっぐなたいむす",
-            "すごいのだよ",
+            "あたらしいぎじゅつがすごい",
+            "にゅーすがたくさんあるのだ",
+            "びっぐなたいむすがきたぞ",
+            "すごいはなしなのだよ",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -426,10 +450,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    ["あたらしいぎじゅつ", "だみー1", "だみー2"],
+                    ["あたらしいぎじゅつがすごい", "だみー1", "だみー2"],
                     ["だめ", "だめだめ", "ぜんぶだめ"],
-                    ["びっぐなたいむす", "だみー1", "だみー2"],
-                    ["すごいのだよ", "だみー1", "だみー2"],
+                    ["びっぐなたいむすがきたぞ", "だみー1", "だみー2"],
+                    ["すごいはなしなのだよ", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -440,10 +464,10 @@ class TestGenerateSongLyrics:
         with p1, p2, p3:
             result = await song.generate_song_lyrics(_draft())
 
-        assert result[0] == "あたらしいぎじゅつ"
+        assert result[0] == "あたらしいぎじゅつがすごい"
         assert result[1] == song.FALLBACK_LYRICS[1]
-        assert result[2] == "びっぐなたいむす"
-        assert result[3] == "すごいのだよ"
+        assert result[2] == "びっぐなたいむすがきたぞ"
+        assert result[3] == "すごいはなしなのだよ"
         # 未解決スロットが残る限り、上限の5回までリトライする
         assert model.generate_content_async.call_count == 5
 
@@ -453,10 +477,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    "あたらしいぎじゅつ",
-                    "にゅーすがいっぱい",
-                    "びっぐなたいむす",
-                    "すごいのだよ",
+                    "あたらしいぎじゅつがすごい",
+                    "にゅーすがたくさんあるのだ",
+                    "びっぐなたいむすがきたぞ",
+                    "すごいはなしなのだよ",
                 ]
             },
             ensure_ascii=False,
@@ -468,10 +492,10 @@ class TestGenerateSongLyrics:
             result = await song.generate_song_lyrics(_draft())
 
         assert result == [
-            "あたらしいぎじゅつ",
-            "にゅーすがいっぱい",
-            "びっぐなたいむす",
-            "すごいのだよ",
+            "あたらしいぎじゅつがすごい",
+            "にゅーすがたくさんあるのだ",
+            "びっぐなたいむすがきたぞ",
+            "すごいはなしなのだよ",
         ]
 
     @pytest.mark.asyncio
