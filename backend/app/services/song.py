@@ -57,70 +57,87 @@ class SongPhrase:
 
 # オリジナルメロディ(A-A'-B-A''構成)。
 # ずんだもんの声域で自然に響くよう、G4(67)〜E5(76)のCメジャーペンタトニック
-# (G4/A4/C5/D5/E5)を中心に、フレーズ末尾のノートを長めにしている。
+# (G4/A4/C5/D5/E5)を中心に、8分音符主体の細かい動きでモーラ数を増やしつつ、
+# フレーズ末尾のノートは長めにして一区切りを明確にしている。
 MELODY_TEMPLATE: tuple[SongPhrase, ...] = (
-    # A: 8モーラ
+    # A: 12モーラ(上昇→下降しD5で伸ばす)
     SongPhrase(
         notes=(
             SongNote(72, QUARTER_FRAMES),
-            SongNote(74, DOTTED_QUARTER_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
             SongNote(76, EIGHTH_FRAMES),
             SongNote(74, EIGHTH_FRAMES),
-            SongNote(72, QUARTER_FRAMES),
+            SongNote(72, EIGHTH_FRAMES),
             SongNote(69, QUARTER_FRAMES),
+            SongNote(72, EIGHTH_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
+            SongNote(76, EIGHTH_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
             SongNote(72, EIGHTH_FRAMES),
             SongNote(74, DOTTED_HALF_FRAMES),
         )
     ),
-    # A': 8モーラ(Aの変奏)
+    # A': 12モーラ(Aの変奏、C5で伸ばす)
     SongPhrase(
         notes=(
             SongNote(72, QUARTER_FRAMES),
-            SongNote(76, DOTTED_QUARTER_FRAMES),
+            SongNote(76, EIGHTH_FRAMES),
             SongNote(74, EIGHTH_FRAMES),
             SongNote(72, EIGHTH_FRAMES),
-            SongNote(74, QUARTER_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
             SongNote(76, QUARTER_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
+            SongNote(72, EIGHTH_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
+            SongNote(76, EIGHTH_FRAMES),
             SongNote(74, EIGHTH_FRAMES),
             SongNote(72, DOTTED_HALF_FRAMES),
         )
     ),
-    # B: 8モーラ(対照的な下降フレーズ)
+    # B: 12モーラ(対照的に低音域から始まりG4で伸ばす)
     SongPhrase(
         notes=(
             SongNote(69, QUARTER_FRAMES),
+            SongNote(67, EIGHTH_FRAMES),
+            SongNote(69, EIGHTH_FRAMES),
+            SongNote(72, EIGHTH_FRAMES),
+            SongNote(69, EIGHTH_FRAMES),
             SongNote(67, QUARTER_FRAMES),
             SongNote(69, EIGHTH_FRAMES),
             SongNote(72, EIGHTH_FRAMES),
-            SongNote(74, DOTTED_QUARTER_FRAMES),
-            SongNote(72, QUARTER_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
+            SongNote(72, EIGHTH_FRAMES),
             SongNote(69, EIGHTH_FRAMES),
             SongNote(67, WHOLE_FRAMES),
         )
     ),
-    # A'': 6モーラ(Aの短縮リプライズ)
+    # A'': 10モーラ(Aの短縮リプライズ、C5で伸ばす)
     SongPhrase(
         notes=(
             SongNote(72, QUARTER_FRAMES),
-            SongNote(76, DOTTED_QUARTER_FRAMES),
+            SongNote(76, EIGHTH_FRAMES),
             SongNote(74, EIGHTH_FRAMES),
             SongNote(72, EIGHTH_FRAMES),
-            SongNote(69, QUARTER_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
+            SongNote(76, EIGHTH_FRAMES),
+            SongNote(74, EIGHTH_FRAMES),
+            SongNote(72, EIGHTH_FRAMES),
+            SongNote(69, DOTTED_QUARTER_FRAMES),
             SongNote(72, DOTTED_HALF_FRAMES),
         )
     ),
 )
 
-# 各フレーズのモーラ数バジェット(8, 8, 8, 6)。MELODY_TEMPLATEから導出する。
+# 各フレーズのモーラ数バジェット(12, 12, 12, 10)。MELODY_TEMPLATEから導出する。
 PHRASE_MORA_BUDGETS: tuple[int, ...] = tuple(len(phrase.notes) for phrase in MELODY_TEMPLATE)
 
 # フォールバック歌詞。GEMINI_PROJECT未設定時・生成失敗時に使う。
-# 各フレーズのモーラ数はPHRASE_MORA_BUDGETS(8, 8, 8, 6)と厳密に一致させてある。
+# 各フレーズのモーラ数はPHRASE_MORA_BUDGETS(12, 12, 12, 10)と厳密に一致させてある。
 FALLBACK_LYRICS: list[str] = [
-    "こんしゅうもげんき",  # こ・ん・しゅ・う・も・げ・ん・き = 8モーラ
-    "えーあいのはなし",  # え・ー・あ・い・の・は・な・し = 8モーラ
-    "いっしょにきこうよ",  # い・っ・しょ・に・き・こ・う・よ = 8モーラ
-    "たのしいのだ",  # た・の・し・い・の・だ = 6モーラ
+    "こんしゅうもエーアイニュース",  # こ・ん・しゅ・う・も・エ・ー・ア・イ・ニュ・ー・ス = 12モーラ
+    "わだいのニュースをおとどけ",  # わ・だ・い・の・ニュ・ー・ス・を・お・と・ど・け = 12モーラ
+    "みんなでいっしょにきいてね",  # み・ん・な・で・い・っ・しょ・に・き・い・て・ね = 12モーラ
+    "エーアイたのしいのだ",  # エ・ー・ア・イ・た・の・し・い・の・だ = 10モーラ
 ]
 
 # 拗音(小書きの母音・ワ行)。直前の文字と結合して1モーラになる。
@@ -322,13 +339,20 @@ def _mix_backing_into_wav(out_path: Path) -> None:
 def _build_lyrics_prompt(headlines: str, budgets: tuple[int, ...], feedback: str) -> str:
     return (
         "あなたは「ずんだもん」というキャラクターです。"
-        "以下は今週のAIニュースの見出し一覧です。\n"
+        "以下は今週のAIニュースの見出しと概要の一覧です。\n"
         f"{headlines}\n\n"
         "これらの内容を踏まえて、ずんだもんニュースソングの歌詞を4フレーズ作ってください。\n"
         "この曲は番組のオープニングテーマ曲のように、聞いた人が思わず口ずさみたくなる"
         "キャッチーで元気な曲にしてください。\n"
         "今週の実際のニュースに登場した製品名・サービス名・企業名を、できるだけかな表記"
         "(カタカナ読み)で歌詞に織り込み、聞くだけで今週何が話題だったか伝わるようにしてください。\n"
+        "各フレーズの役割は次の通りです。必ず守ってください:\n"
+        "・1フレーズ目: 番組の挨拶とつかみ(視聴者への呼びかけ、今週も始まるよ、といった導入)。\n"
+        "・2フレーズ目、3フレーズ目: 今週の目玉ニュースを具体的に歌う。見出し・概要にある"
+        "製品名・サービス名・企業名をできるだけかな表記で入れること。"
+        "「いろんなニュース」「すごいはなし」のような、何の話か分からない抽象的な表現は禁止です。\n"
+        "・4フレーズ目: 締めの一言。「いっしょにチェックしよう」のような視聴者への呼びかけと"
+        "「〜のだ」口調で締めくくること。\n"
         "口調: 一人称は「ボク」、できるだけ語尾に「〜のだ」「〜なのだ」を使う、"
         "ずんだもんらしい明るく元気な口調を保つこと。\n"
         "表記: ひらがな・カタカナ・長音符(ー)のみを使うこと。漢字・英字・句読点は一切使わないこと。\n"
@@ -337,6 +361,8 @@ def _build_lyrics_prompt(headlines: str, budgets: tuple[int, ...], feedback: str
         f"3フレーズ目{budgets[2]}モーラ、4フレーズ目{budgets[3]}モーラ。\n"
         "モーラの数え方: 拗音(ゃゅょぁぃぅぇぉゎ等)は直前の文字と合わせて1モーラ、"
         "「ん」「っ」「ー」(長音符)はそれぞれ単独で1モーラとして数えてください。\n"
+        "数え方の例: 「エーアイニュース」は エ・ー・ア・イ・ニュ・ー・ス で7モーラです"
+        "(拗音「ニュ」は直前の「ニ」と結合して1モーラ、長音符「ー」はそれぞれ単独で1モーラ)。\n"
         "各フレーズにつき、モーラ数条件を満たす言い回しの候補を3つずつ考えてください"
         "(内容が近くても構わないので、言い回しを変えてモーラ数を厳守しやすくしてください)。\n"
         f"{feedback}"
@@ -395,7 +421,8 @@ async def generate_song_lyrics(draft: VideoPlanDraft) -> list[str]:
         model = GenerativeModel("gemini-2.5-flash")
 
         headlines = "\n".join(
-            f"- {seg.title_ja or seg.headline}" for seg in draft.segments
+            f"- 見出し: {seg.title_ja or seg.headline} / 概要: {seg.summary[:60]}"
+            for seg in draft.segments
         )
 
         feedback = ""
