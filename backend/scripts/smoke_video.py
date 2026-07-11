@@ -240,6 +240,33 @@ async def fake_generate_segment_clips(
     return {1: clip_path}
 
 
+async def fake_generate_song_background(draft: VideoPlanDraft) -> Image.Image:
+    return Image.new("RGB", (1280, 720), (40, 18, 60))
+
+
+async def fake_generate_song_clip(song_bg: Image.Image) -> Path:
+    """generate_song_clipの代替。Veoを呼ばず、ffmpegのテストソースで動きのある
+    MV背景クリップを作り、歌のクリップ背景+カラオケオーバーレイ合成パスを通す。"""
+    clips_dir = Path(tempfile.mkdtemp(prefix="smoke_song_clip_"))
+    clip_path = clips_dir / "song.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "gradients=size=1920x1080:rate=30:duration=2",
+            "-pix_fmt",
+            "yuv420p",
+            str(clip_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return clip_path
+
+
 async def fake_build_reading_map(texts: list[str]) -> dict[str, str]:
     return {}
 
@@ -252,6 +279,8 @@ def apply_patches() -> None:
     video_generator.generate_theme_images = fake_generate_theme_images
     video_generator.generate_segment_images = fake_generate_segment_images
     video_generator.generate_segment_clips = fake_generate_segment_clips
+    video_generator.generate_song_background = fake_generate_song_background
+    video_generator.generate_song_clip = fake_generate_song_clip
     video_generator.build_reading_map = fake_build_reading_map
 
 
@@ -358,7 +387,10 @@ async def main() -> None:
         assert phrase in srt_text, f"SRTにフォールバック歌詞が含まれていません: {phrase!r}"
 
     assert song_lyrics_path.exists(), "song_lyrics.json が生成されていません(歌パートがスキップされた?)"
-    assert "ずんだもんニュースソング" in artifact.chapters, "チャプターに歌パートがありません"
+    # 歌はフック(〜5秒)の直後に始まるため、YouTubeの「各チャプター10秒以上」ルールで
+    # チャプターからは意図的に落とされる(_build_chapters参照)。歌パート自体の存在は
+    # 上のSRT歌詞チェックで検証済みなので、ここではチャプターの体裁だけ確認する
+    assert artifact.chapters.startswith("0:00 "), f"チャプターが0:00始まりではありません: {artifact.chapters!r}"
 
     part_files = sorted(parts_dir.glob("part_*.mp4"))
     assert len(part_files) == artifact.slide_count, (

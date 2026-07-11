@@ -44,6 +44,17 @@ _MOTION_PROMPT = (
     "no scene change, no camera cuts."
 )
 
+# 歌コーナーのMV背景用。歌に合わせたリズミカルな光の演出を加えるが、
+# 上に歌詞テキストを重ねるため構図の激変・文字の出現は禁止する。
+_SONG_MOTION_PROMPT = (
+    "Animate this illustration as a lively music video background: rhythmic pulsing "
+    "stage lights, floating glowing particles, gentle sweeping light beams, a slow "
+    "camera drift. Keep the composition, colors, style and every existing object from "
+    "the original image. Upbeat but smooth, seamless, loopable motion. "
+    "Strictly no text, no letters, no logos, no new objects, no people, no faces, "
+    "no scene change, no camera cuts."
+)
+
 
 def _cache_path(model: str, prompt: str, image_bytes: bytes) -> Path:
     digest = hashlib.sha256(
@@ -127,3 +138,12 @@ async def generate_segment_clips(
         )
     )
     return {number: clip for number, clip in zip(numbers, results) if clip is not None}
+
+
+async def generate_song_clip(song_bg: Image.Image) -> Path | None:
+    """歌コーナーのMV背景画像を動くクリップ(mp4)にする。失敗時はNone(静止画のまま)。"""
+    if not settings.VIDEO_GEN_ENABLED or not settings.GEMINI_PROJECT:
+        return None
+    return await _fetch_clip(
+        settings.VIDEO_GEN_MODEL, _SONG_MOTION_PROMPT, song_bg, asyncio.Semaphore(1)
+    )

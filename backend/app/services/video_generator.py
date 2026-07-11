@@ -25,7 +25,7 @@ from .image_assets import (
 )
 from .kana_reading import build_reading_map, to_voice_text
 from .song import check_song_support, generate_song_lyrics, synthesize_song
-from .video_assets import generate_segment_clips
+from .video_assets import generate_segment_clips, generate_song_clip
 from .video_review import review_and_retake
 
 logger = logging.getLogger(__name__)
@@ -1013,6 +1013,7 @@ def _render_song_slide(
     compact: bool = False,
     highlight_index: int | None = None,
     zoom: float = 1.0,
+    overlay_only: bool = False,
 ) -> None:
     """ずんだもんニュースソングのコーナー。生成済みのミュージックビデオ風背景があれば
     全画面に敷いて半透明の黒でトーンダウンし、なければ共通のダーク背景を使う。その上に
@@ -1020,8 +1021,15 @@ def _render_song_slide(
 
     highlight_index が指定されている場合は、カラオケ風にその行だけ通常の見た目(白・太字)
     で表示し、他の行は淡色にトーンダウンする(Noneなら全行が通常表示、既存呼び出し元との
-    互換を保つ)。zoomはspec.imageのMV背景をズームインする倍率(1.0で従来通り)。"""
-    if spec.image is not None:
+    互換を保つ)。zoomはspec.imageのMV背景をズームインする倍率(1.0で従来通り)。
+
+    overlay_only=Trueの場合はMV背景を描かず、半透明の黒スクリム・テキスト・キャラクター
+    だけのRGBA PNGを書き出す(Veo製の動くMV背景の上にffmpegで重ねる用。zoomは背景に
+    かかる演出のため無視される)。"""
+    if overlay_only:
+        # 動画背景の上でも歌詞の可読性を保つため、スクリムはオーバーレイ側に持つ
+        image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 140))
+    elif spec.image is not None:
         if zoom != 1.0:
             crop_w, crop_h = round(WIDTH * zoom), round(HEIGHT * zoom)
             zoomed = _cover_crop(spec.image, crop_w, crop_h)
@@ -1091,7 +1099,10 @@ def _render_song_slide(
     draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
     path.parent.mkdir(parents=True, exist_ok=True)
     image = _paste_character_overlay(image, spec)
-    image.convert("RGB").save(path)
+    if overlay_only:
+        image.save(path)  # 背景クリップに重ねるため透明度(RGBA)を保持する
+    else:
+        image.convert("RGB").save(path)
 
 
 def _render_visual_panel(
@@ -1842,6 +1853,7 @@ def _build_slides(
     song_lyrics: list[str] | None = None,
     song_bg: Image.Image | None = None,
     segment_clips: dict[int, Path] | None = None,
+    song_clip: Path | None = None,
 ) -> list[SlideSpec]:
     segment_images = segment_images or {}
     segment_clips = segment_clips or {}
@@ -1881,6 +1893,7 @@ def _build_slides(
                 narrator="zundamon",
                 lyrics=song_lyrics,
                 image=song_bg,
+                clip=song_clip,
             )
         )
     slides.append(
@@ -1995,13 +2008,20 @@ async def _build_part(
 
     _render_slide(slide, slide_path, compact=compact)
 
-    # Veo製背景クリップ付きillustrationは、テキスト・スクリム・キャラだけの
-    # 透明オーバーレイPNGを別途描き、ffmpegでクリップの上に重ねる。
-    # クリップが無い(生成失敗・無効化)場合は従来どおり静止画スライドを使う
-    use_clip = slide.kind == "illustration" and slide.clip is not None and slide.clip.exists()
+    # Veo製背景クリップ付きスライド(illustration / songのMV背景)は、テキスト・
+    # スクリム・キャラだけの透明オーバーレイPNGを別途描き、ffmpegでクリップの上に
+    # 重ねる。クリップが無い(生成失敗・無効化)場合は従来どおり静止画スライドを使う
+    use_clip = (
+        slide.kind in ("illustration", "song")
+        and slide.clip is not None
+        and slide.clip.exists()
+    )
     overlay_path = slides_dir / f"slide_{index:03}_overlay.png"
     if use_clip:
-        _render_illustration_slide(slide, overlay_path, compact=compact, overlay_only=True)
+        if slide.kind == "illustration":
+            _render_illustration_slide(slide, overlay_path, compact=compact, overlay_only=True)
+        else:
+            _render_song_slide(slide, overlay_path, compact=compact, overlay_only=True)
 
     # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
     # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
@@ -2095,15 +2115,18 @@ async def _build_part(
 
     # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
     # segmentの箇条書きは最初から全表示し、必要な場合だけリアクション用フレームを末尾に追加する。
-    frames: list[tuple[Path, float]] = [(slide_path, 0.0)]
+    # 背景クリップ使用時は静止スライドの代わりに透明オーバーレイをフレームにする
+    frames: list[tuple[Path, float]] = [(overlay_path if use_clip else slide_path, 0.0)]
     if show_reaction_character:
         frames.append((reaction_slide_path, expert_duration))
 
     if slide.kind == "song" and chunk_durations:
         # カラオケ風演出: chunk_durationsの各エントリ(先頭は歌い出し前の無音、
-        # 以降は各フレーズ)を時系列にたどり、フレーズごとにハイライト+ズームインした
+        # 以降は各フレーズ)を時系列にたどり、フレーズごとにハイライトした
         # バリアントをそのフレーズの開始時刻から表示する。reuse_audioのリテイクでも
         # reuse.chunk_durationsから同じタイムラインを再構築できる(音声・尺は不変)。
+        # 背景クリップ使用時はバリアントも透明オーバーレイで描く(ズームは背景演出
+        # なので動く背景に任せて無効化する)。
         cumulative = 0.0
         phrase_index = 0
         for text, dur, _narrator in chunk_durations:
@@ -2114,7 +2137,8 @@ async def _build_part(
                     variant_path,
                     compact=compact,
                     highlight_index=phrase_index,
-                    zoom=1.0 + 0.025 * (phrase_index + 1),
+                    zoom=1.0 if use_clip else 1.0 + 0.025 * (phrase_index + 1),
+                    overlay_only=use_clip,
                 )
                 frames.append((variant_path, cumulative))
                 phrase_index += 1
@@ -2124,29 +2148,38 @@ async def _build_part(
 
     if use_clip:
         # 背景クリップをループ再生しつつ画面いっぱいに整え、透明オーバーレイを重ねる。
-        # 字幕・フェード等(vf)はオーバーレイ合成後の映像に適用する
-        filter_complex = (
+        # フレームが複数ある場合(歌のカラオケ演出)は、overlayのenable=時間窓で
+        # 表示フレームを切り替える。字幕・フェード等(vf)は合成後の映像に適用する
+        filter_parts = [
             f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-            f"crop={WIDTH}:{HEIGHT}[bg];"
-            f"[bg][1:v]overlay=0:0[ov];[ov]{vf}[vout]"
-        )
-        args = [
-            "-stream_loop",
-            "-1",
-            "-i",
-            str(slide.clip),
-            "-loop",
-            "1",
-            "-i",
-            f"slides/{overlay_path.name}",
+            f"crop={WIDTH}:{HEIGHT}[bg]"
+        ]
+        args = ["-stream_loop", "-1", "-i", str(slide.clip)]
+        prev_label = "bg"
+        cursor = 0.0
+        for i, (frame_path, duration) in enumerate(frame_specs, start=1):
+            args += ["-loop", "1", "-i", f"slides/{frame_path.name}"]
+            start = cursor
+            cursor += duration
+            # 最後のフレームはパート末尾(フェードアウト・端数)まで表示し続ける
+            enable = (
+                f"gte(t,{start:.3f})"
+                if i == len(frame_specs)
+                else f"between(t,{start:.3f},{cursor:.3f})"
+            )
+            label = f"ov{i}"
+            filter_parts.append(f"[{prev_label}][{i}:v]overlay=0:0:enable='{enable}'[{label}]")
+            prev_label = label
+        filter_parts.append(f"[{prev_label}]{vf}[vout]")
+        args += [
             "-i",
             f"audio/audio_{index:03}.wav",
             "-filter_complex",
-            filter_complex,
+            ";".join(filter_parts),
             "-map",
             "[vout]",
             "-map",
-            "2:a",
+            f"{len(frame_specs) + 1}:a",
         ]
     elif len(frame_specs) > 1:
         filter_complex = _build_multi_frame_filter([duration for _, duration in frame_specs])
@@ -2325,12 +2358,28 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
                 logger.exception("song background generation failed; using dark fallback")
                 song_bg = None
 
+    # MV背景をVeoで動くクリップにする(失敗・無効時はNoneで静止画のまま)
+    song_clip: Path | None = None
+    if song_bg is not None:
+        song_clip = await generate_song_clip(song_bg)
+        if song_clip is not None:
+            clips_dir = work_dir / "assets" / "clips"
+            clips_dir.mkdir(parents=True, exist_ok=True)
+            dest = clips_dir / "song.mp4"
+            try:
+                shutil.copyfile(song_clip, dest)
+                song_clip = dest
+            except OSError:
+                logger.exception("failed to copy song clip: %s", song_clip)
+                song_clip = None
+
     slides = _build_slides(
         draft,
         segment_images,
         song_lyrics=song_lyrics,
         song_bg=song_bg,
         segment_clips=segment_clips,
+        song_clip=song_clip,
     )
     reading_map = await build_reading_map(
         [slide.narration for slide in slides if slide.narration]
