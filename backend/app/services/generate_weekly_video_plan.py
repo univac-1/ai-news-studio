@@ -9,11 +9,13 @@ from .categorize import categorize_news
 # 本編#1開始を20秒以内に収めるための文字数バジェット
 HOOK_MAX_CHARS = 40
 OPENING_MAX_CHARS = 95
+OUTRO_MAX_CHARS = 140
 TITLE_JA_MAX_CHARS = 16
 # セグメント本文(1行要約・Impact・Actionボックス)のフォント自動縮小に頼りすぎないための文字数バジェット
 SUMMARY_MAX_CHARS = 55
 IMPACT_MAX_CHARS = 40
 ACTION_MAX_CHARS = 40
+RANK_REASON_MAX_CHARS = 18
 
 _JAPANESE_RE = re.compile(r"[぀-ヿ一-鿿]")
 
@@ -103,8 +105,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
             f"ポイントは、{item.impact}\n"
             f"次のアクションとしては、{item.action}"
         )
-        # ランキングの理由行は1行(約40字)まで描けるため、切り詰めは保険程度にとどめる
-        rank_reason = shorten(item.impact.split("。")[0], 40) if item.impact else ""
+        rank_reason = shorten(item.impact.split("。")[0], RANK_REASON_MAX_CHARS) if item.impact else ""
         segments.append(
             VideoSegment(
                 number=i,
@@ -123,15 +124,14 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
             )
         )
 
-    # まとめは重要度ランキング形式(順位=選定順)。各順位に短い理由を添える
+    # まとめは重要度ランキング形式(順位=選定順)。音声でも追いやすいよう短く並べる
     top3 = segments[:3]
     ranking_reasons = "".join(
-        f"第{seg.number}位は、{seg.title_ja}。{seg.rank_reason}。" for seg in top3
+        f"{seg.number}位: {seg.title_ja} - {seg.rank_reason}。" for seg in top3
     )
     outro = (
         f"今週の重要度ランキングです。{ranking_reasons}"
-        "気になるニュースはチャプターから見返してください。"
-        "来週も最新情報をまとめてお届けしますので、チャンネル登録・通知オンをお忘れなく！"
+        "気になるニュースはチャプターからどうぞ。登録・通知オンもお願いします。"
     )
 
     # フック(0〜5秒想定)。40字以内で今週最大のニュースを一言。

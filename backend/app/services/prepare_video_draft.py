@@ -22,6 +22,7 @@ from .generate_weekly_video_plan import (
     HOOK_MAX_CHARS,
     IMPACT_MAX_CHARS,
     OPENING_MAX_CHARS,
+    RANK_REASON_MAX_CHARS,
     SUMMARY_MAX_CHARS,
     TITLE_JA_MAX_CHARS,
     contains_japanese,
@@ -80,7 +81,7 @@ async def _fetch_meta_completions(segments: list[VideoSegment]) -> list[dict] | 
             "のような3〜4ステップ(各14文字以内)。\n"
             '  開発ツール系: {"type":"command","items":["コマンド例や利用イメージ(各40文字以内、最大3行)"]}。\n'
             "  どちらにも該当しない場合は null。無理に作らない。\n"
-            "- rank_reason: このニュースがなぜ重要かの一言理由。20文字以内。\n"
+            f"- rank_reason: このニュースがなぜ重要かの一言理由。{RANK_REASON_MAX_CHARS}文字以内。\n"
             f"- summary: 元の要約を一行要約にした版。{SUMMARY_MAX_CHARS}文字以内。\n"
             f"- impact: 元のインパクトを要約した版。視聴者への影響。{IMPACT_MAX_CHARS}文字以内。\n"
             f"- action: 元のアクションを要約した版。視聴者が次にやること。{ACTION_MAX_CHARS}文字以内。\n"
@@ -144,7 +145,7 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
                 if (
                     isinstance(raw_rank_reason, str)
                     and raw_rank_reason.strip()
-                    and len(raw_rank_reason.strip()) <= 20
+                    and len(raw_rank_reason.strip()) <= RANK_REASON_MAX_CHARS
                 ):
                     update["rank_reason"] = raw_rank_reason.strip()
 
@@ -218,8 +219,7 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
     with_rank_reason = []
     for seg in segments:
         if not seg.rank_reason:
-            # 理由行は1行(約40字)まで描けるため、切り詰めは保険程度にとどめる
-            reason = shorten(seg.impact.split("。")[0], 40) if seg.impact else ""
+            reason = shorten(seg.impact.split("。")[0], RANK_REASON_MAX_CHARS) if seg.impact else ""
             seg = seg.model_copy(update={"rank_reason": reason})
         with_rank_reason.append(seg)
     segments = with_rank_reason

@@ -12,6 +12,8 @@ from .generate_weekly_video_plan import (
     HOOK_MAX_CHARS,
     IMPACT_MAX_CHARS,
     OPENING_MAX_CHARS,
+    OUTRO_MAX_CHARS,
+    RANK_REASON_MAX_CHARS,
     SUMMARY_MAX_CHARS,
     TITLE_JA_MAX_CHARS,
     contains_japanese,
@@ -141,11 +143,11 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "のような3〜4ステップの攻撃フロー(各14文字以内)。\n"
             '     開発ツール系: {"type":"command","items":["コマンド例や利用イメージ(各40文字以内、最大3行)"]}。\n'
             "     どちらにも該当しない場合は null。無理に作らない。\n"
-            "   - rank_reason: このニュースがなぜ重要かの一言理由。20文字以内。"
+            f"   - rank_reason: このニュースがなぜ重要かの一言理由。{RANK_REASON_MAX_CHARS}文字以内。"
             "例: 政府・規制産業向けAI活用の本格化\n"
             "7. outro: まとめ原稿。「今週の重要度ランキング」として第1位〜第3位(セグメント1〜3がそのまま順位)を、"
-            "各順位に短い理由を一言添えて振り返る(例: 第1位は、◯◯。政府向けAI活用の本格化です。)。"
-            "最後にチャンネル登録・通知オンを促す。220文字以内。\n"
+            "各順位は短いタイトルと一言理由だけで振り返る(例: 1位は◯◯、政府向けAI活用の本格化。)。"
+            f"最後にチャンネル登録・通知オンを短く促す。{OUTRO_MAX_CHARS}文字以内。\n"
             "8. title_candidates: YouTubeタイトル案を5つ。最重要ニュースの具体的な内容を軸に、"
             "数字・ベネフィット・意外性のいずれかを含める。40文字以内。"
             "釣りタイトル(内容と乖離した誇張)は禁止。"
@@ -192,7 +194,12 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             if isinstance(raw_intro, str) and len(raw_intro) <= OPENING_MAX_CHARS + 15
             else draft.intro
         )
-        new_outro: str = result["outro"]
+        raw_outro = result["outro"]
+        new_outro = (
+            raw_outro
+            if isinstance(raw_outro, str) and len(raw_outro) <= OUTRO_MAX_CHARS
+            else draft.outro
+        )
 
         # segments_meta はフィールド単位で defensive に採用する
         raw_meta = result.get("segments_meta")
@@ -240,7 +247,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
                 raw_rank_reason.strip()
                 if isinstance(raw_rank_reason, str)
                 and raw_rank_reason.strip()
-                and len(raw_rank_reason.strip()) <= 26
+                and len(raw_rank_reason.strip()) <= RANK_REASON_MAX_CHARS
                 else seg.rank_reason
             )
             raw_zundamon_line = zundamon_lines_list[i]
