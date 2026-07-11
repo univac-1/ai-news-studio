@@ -391,10 +391,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    ["あたらしいぎじゅつがすごい", "だみー1", "だみー2"],
-                    ["にゅーすがたくさんあるのだ", "だみー1", "だみー2"],
-                    ["びっぐなたいむすがきたぞ", "だみー1", "だみー2"],
-                    ["すごいはなしなのだよ", "だみー1", "だみー2"],
+                    ["ずんずんエーアイニュースだ", "だみー1", "だみー2"],
+                    ["サンプルエーアイきたのだ", "だみー1", "だみー2"],
+                    ["モデルとツールもチェックだ", "だみー1", "だみー2"],
+                    ["いっしょにチェックなのだ", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -406,10 +406,10 @@ class TestGenerateSongLyrics:
             result = await song.generate_song_lyrics(_draft())
 
         assert result == [
-            "あたらしいぎじゅつがすごい",
-            "にゅーすがたくさんあるのだ",
-            "びっぐなたいむすがきたぞ",
-            "すごいはなしなのだよ",
+            "ずんずんエーアイニュースだ",
+            "サンプルエーアイきたのだ",
+            "モデルとツールもチェックだ",
+            "いっしょにチェックなのだ",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -420,10 +420,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    ["ダメ", "あたらしいぎじゅつがすごい", "だみー"],
-                    ["AIニュース", "にゅーすがたくさんあるのだ", "だみー"],
-                    ["みじかい", "びっぐなたいむすがきたぞ", "だみー"],
-                    ["ながすぎるふれーずだよ", "すごいはなしなのだよ", "だみー"],
+                    ["ダメ", "ずんずんエーアイニュースだ", "だみー"],
+                    ["AIニュース", "サンプルエーアイきたのだ", "だみー"],
+                    ["みじかい", "モデルとツールもチェックだ", "だみー"],
+                    ["ながすぎるふれーずだよ", "いっしょにチェックなのだ", "だみー"],
                 ]
             },
             ensure_ascii=False,
@@ -435,10 +435,39 @@ class TestGenerateSongLyrics:
             result = await song.generate_song_lyrics(_draft())
 
         assert result == [
-            "あたらしいぎじゅつがすごい",
-            "にゅーすがたくさんあるのだ",
-            "びっぐなたいむすがきたぞ",
-            "すごいはなしなのだよ",
+            "ずんずんエーアイニュースだ",
+            "サンプルエーアイきたのだ",
+            "モデルとツールもチェックだ",
+            "いっしょにチェックなのだ",
+        ]
+        assert model.generate_content_async.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_middle_phrases_skip_generic_news_candidates(self):
+        # 2・3フレーズ目はニュースの具体性が必要なため、モーラ数が合っていても
+        # 抽象的すぎる候補はスキップし、次の具体寄り候補を採用する。
+        payload = json.dumps(
+            {
+                "phrases": [
+                    ["ずんずんエーアイニュースだ", "だみー1", "だみー2"],
+                    ["わだいのニュースをおとどけ", "サンプルエーアイきたのだ", "だみー"],
+                    ["すごいはなしがきたのだよ", "モデルとツールもチェックだ", "だみー"],
+                    ["いっしょにチェックなのだ", "だみー1", "だみー2"],
+                ]
+            },
+            ensure_ascii=False,
+        )
+        model = _model_with_responses([payload])
+        p1, p2, p3 = self._patched(model)
+
+        with p1, p2, p3:
+            result = await song.generate_song_lyrics(_draft())
+
+        assert result == [
+            "ずんずんエーアイニュースだ",
+            "サンプルエーアイきたのだ",
+            "モデルとツールもチェックだ",
+            "いっしょにチェックなのだ",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -450,10 +479,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    ["あたらしいぎじゅつがすごい", "だみー1", "だみー2"],
+                    ["ずんずんエーアイニュースだ", "だみー1", "だみー2"],
                     ["だめ", "だめだめ", "ぜんぶだめ"],
-                    ["びっぐなたいむすがきたぞ", "だみー1", "だみー2"],
-                    ["すごいはなしなのだよ", "だみー1", "だみー2"],
+                    ["モデルとツールもチェックだ", "だみー1", "だみー2"],
+                    ["いっしょにチェックなのだ", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -464,10 +493,10 @@ class TestGenerateSongLyrics:
         with p1, p2, p3:
             result = await song.generate_song_lyrics(_draft())
 
-        assert result[0] == "あたらしいぎじゅつがすごい"
+        assert result[0] == "ずんずんエーアイニュースだ"
         assert result[1] == song.FALLBACK_LYRICS[1]
-        assert result[2] == "びっぐなたいむすがきたぞ"
-        assert result[3] == "すごいはなしなのだよ"
+        assert result[2] == "モデルとツールもチェックだ"
+        assert result[3] == "いっしょにチェックなのだ"
         # 未解決スロットが残る限り、上限の5回までリトライする
         assert model.generate_content_async.call_count == 5
 
@@ -477,10 +506,10 @@ class TestGenerateSongLyrics:
         payload = json.dumps(
             {
                 "phrases": [
-                    "あたらしいぎじゅつがすごい",
-                    "にゅーすがたくさんあるのだ",
-                    "びっぐなたいむすがきたぞ",
-                    "すごいはなしなのだよ",
+                    "ずんずんエーアイニュースだ",
+                    "サンプルエーアイきたのだ",
+                    "モデルとツールもチェックだ",
+                    "いっしょにチェックなのだ",
                 ]
             },
             ensure_ascii=False,
@@ -492,10 +521,10 @@ class TestGenerateSongLyrics:
             result = await song.generate_song_lyrics(_draft())
 
         assert result == [
-            "あたらしいぎじゅつがすごい",
-            "にゅーすがたくさんあるのだ",
-            "びっぐなたいむすがきたぞ",
-            "すごいはなしなのだよ",
+            "ずんずんエーアイニュースだ",
+            "サンプルエーアイきたのだ",
+            "モデルとツールもチェックだ",
+            "いっしょにチェックなのだ",
         ]
 
     @pytest.mark.asyncio

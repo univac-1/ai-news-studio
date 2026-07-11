@@ -134,11 +134,22 @@ PHRASE_MORA_BUDGETS: tuple[int, ...] = tuple(len(phrase.notes) for phrase in MEL
 # フォールバック歌詞。GEMINI_PROJECT未設定時・生成失敗時に使う。
 # 各フレーズのモーラ数はPHRASE_MORA_BUDGETS(12, 12, 12, 10)と厳密に一致させてある。
 FALLBACK_LYRICS: list[str] = [
-    "こんしゅうもエーアイニュース",  # こ・ん・しゅ・う・も・エ・ー・ア・イ・ニュ・ー・ス = 12モーラ
-    "わだいのニュースをおとどけ",  # わ・だ・い・の・ニュ・ー・ス・を・お・と・ど・け = 12モーラ
-    "みんなでいっしょにきいてね",  # み・ん・な・で・い・っ・しょ・に・き・い・て・ね = 12モーラ
-    "エーアイたのしいのだ",  # エ・ー・ア・イ・た・の・し・い・の・だ = 10モーラ
+    "ずんずんエーアイニュースだ",  # ず・ん・ず・ん・エ・ー・ア・イ・ニュ・ー・ス・だ = 12モーラ
+    "ホットなわだいをチェックだ",  # ホ・ッ・ト・な・わ・だ・い・を・チェ・ッ・ク・だ = 12モーラ
+    "だいじなポイントおさえる",  # だ・い・じ・な・ポ・イ・ン・ト・お・さ・え・る = 12モーラ
+    "いっしょにチェックなのだ",  # い・っ・しょ・に・チェ・ッ・ク・な・の・だ = 10モーラ
 ]
+
+# 2・3フレーズ目はニュースの具体性が必要なため、抽象的すぎる候補は採用しない。
+_GENERIC_NEWS_PHRASES = (
+    "いろんなニュース",
+    "たくさんある",
+    "すごいはなし",
+    "すごいニュース",
+    "わだいのニュース",
+    "ホットなわだい",
+    "みんなできいて",
+)
 
 # 拗音(小書きの母音・ワ行)。直前の文字と結合して1モーラになる。
 _SMALL_KANA = set("ゃゅょぁぃぅぇぉゎャュョァィゥェォヮ")
@@ -343,14 +354,16 @@ def _build_lyrics_prompt(headlines: str, budgets: tuple[int, ...], feedback: str
         f"{headlines}\n\n"
         "これらの内容を踏まえて、ずんだもんニュースソングの歌詞を4フレーズ作ってください。\n"
         "この曲は番組のオープニングテーマ曲のように、聞いた人が思わず口ずさみたくなる"
-        "キャッチーで元気な曲にしてください。\n"
+        "キャッチーで元気な曲にしてください。短い反復語や勢いのある言葉を優先し、"
+        "説明文ではなくサビとして歌える言い回しにしてください。\n"
         "今週の実際のニュースに登場した製品名・サービス名・企業名を、できるだけかな表記"
         "(カタカナ読み)で歌詞に織り込み、聞くだけで今週何が話題だったか伝わるようにしてください。\n"
         "各フレーズの役割は次の通りです。必ず守ってください:\n"
         "・1フレーズ目: 番組の挨拶とつかみ(視聴者への呼びかけ、今週も始まるよ、といった導入)。\n"
         "・2フレーズ目、3フレーズ目: 今週の目玉ニュースを具体的に歌う。見出し・概要にある"
         "製品名・サービス名・企業名をできるだけかな表記で入れること。"
-        "「いろんなニュース」「すごいはなし」のような、何の話か分からない抽象的な表現は禁止です。\n"
+        "「いろんなニュース」「たくさんある」「すごいはなし」「わだいのニュース」"
+        "「ホットなわだい」のような、何の話か分からない抽象的な表現は禁止です。\n"
         "・4フレーズ目: 締めの一言。「いっしょにチェックしよう」のような視聴者への呼びかけと"
         "「〜のだ」口調で締めくくること。\n"
         "口調: 一人称は「ボク」、できるだけ語尾に「〜のだ」「〜なのだ」を使う、"
@@ -373,7 +386,9 @@ def _build_lyrics_prompt(headlines: str, budgets: tuple[int, ...], feedback: str
     )
 
 
-def _select_candidate(raw_candidates: object, budget: int) -> tuple[str | None, list[str]]:
+def _select_candidate(
+    raw_candidates: object, budget: int, phrase_index: int | None = None
+) -> tuple[str | None, list[str]]:
     """1スロット分の候補群から、モーラ数条件を満たす最初の候補を選ぶ。
 
     戻り値は (採用した歌詞 or None, 却下理由のリスト)。
@@ -395,6 +410,11 @@ def _select_candidate(raw_candidates: object, budget: int) -> tuple[str | None, 
             continue
         if actual != budget:
             rejections.append(f"「{cleaned}」は{actual}モーラですが{budget}モーラ必要です。")
+            continue
+        if phrase_index in (1, 2) and any(
+            generic in cleaned for generic in _GENERIC_NEWS_PHRASES
+        ):
+            rejections.append(f"「{cleaned}」はニュース内容が抽象的すぎます。")
             continue
         return cleaned, rejections
 
@@ -459,7 +479,7 @@ async def generate_song_lyrics(draft: VideoPlanDraft) -> list[str]:
             for i, raw_candidates in enumerate(raw_phrases):
                 if best[i] is not None:
                     continue
-                selected, rejections = _select_candidate(raw_candidates, budgets[i])
+                selected, rejections = _select_candidate(raw_candidates, budgets[i], i)
                 if selected is not None:
                     best[i] = selected
                     continue
