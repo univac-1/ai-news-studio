@@ -29,10 +29,12 @@ class Settings(BaseSettings):
     # セグメント導入イラストをVeo(image-to-video)で動くクリップにする。
     # 生成イラストを先頭フレームとして渡すため絵柄は変わらず、動きだけが加わる。
     # Veoは秒課金で高コスト(fast 1080pで$0.12/秒、8秒クリップ約$1)のため
-    # fast系をデフォルトにし、クリップはキャッシュする。さらに抑えたい場合は
-    # veo-3.1-lite-generate-preview($0.08/秒)へ。veo-3.0系は2026-06-30廃止済み。
+    # fast系をデフォルトにし、クリップはキャッシュする。
+    # 注意: preview系(veo-3.1-*-preview)はVertex AIのpredictで404になる
+    # (モデル定義は見えるが実行アクセス不可)ため、GA版(-001)を使うこと。
+    # veo-3.0系は2026-06-30廃止済み。
     VIDEO_GEN_ENABLED: bool = True
-    VIDEO_GEN_MODEL: str = "veo-3.1-fast-generate-preview"
+    VIDEO_GEN_MODEL: str = "veo-3.1-fast-generate-001"
     VIDEO_GEN_LOCATION: str = "us-central1"
     VIDEO_GEN_DURATION_SECONDS: int = 8
     CHARACTER_OVERLAY_ENABLED: bool = True
