@@ -1,10 +1,10 @@
 # AI News Studio
 
-![AI News Studio hero](assets/readme/ai-news-studio-hero.png)
-
 ![AI News Studio overview](assets/readme/image.png)
 
-AIニュース動画制作管理ツール。直近1週間の優先度Aニュースを自動収集し、週次動画ドラフトをワンクリックで生成します。
+![AI News Studio hero](assets/readme/ai-news-studio-hero.png)
+
+AIニュース動画制作管理ツール。直近1週間の優先度Aニュースを自動収集し、週次動画ドラフトを生成します。
 
 ![AI News Studio architecture](assets/readme/architecture.png)
 
@@ -90,12 +90,12 @@ docker run -p 8080:8080 \
 
 以下の GitHub Secrets を設定してください:
 
-| Secret | 説明 | 値の例 |
-|---|---|---|
-| `GCP_PROJECT_ID` | GCP プロジェクト ID | `my-project-123` |
-| `GCP_REGION` | リージョン | `asia-northeast1` |
-| `GCP_WIF_PROVIDER` | Workload Identity Federation プロバイダー | `projects/123/locations/global/workloadIdentityPools/github/providers/github` |
-| `GCP_SERVICE_ACCOUNT` | デプロイ用サービスアカウント | `deployer@my-project.iam.gserviceaccount.com` |
+| Secret                | 説明                                      | 値の例                                                                        |
+| --------------------- | ----------------------------------------- | ----------------------------------------------------------------------------- |
+| `GCP_PROJECT_ID`      | GCP プロジェクト ID                       | `my-project-123`                                                              |
+| `GCP_REGION`          | リージョン                                | `asia-northeast1`                                                             |
+| `GCP_WIF_PROVIDER`    | Workload Identity Federation プロバイダー | `projects/123/locations/global/workloadIdentityPools/github/providers/github` |
+| `GCP_SERVICE_ACCOUNT` | デプロイ用サービスアカウント              | `deployer@my-project.iam.gserviceaccount.com`                                 |
 
 ### Secret Manager で認証情報を渡す
 
@@ -145,23 +145,23 @@ SMTP_USE_SSL=false
 
 ## API エンドポイント
 
-| Method | Path | 認証 | 説明 |
-|--------|------|------|------|
-| GET | /api/health | 不要 | ヘルスチェック（Cloud Run 用） |
-| GET | /api/news/weekly | Basic | 直近7日の全ニュース |
-| GET | /api/news/priority-a | Basic | 優先度A・使用済み除外 |
-| POST | /api/drafts/generate-weekly | Basic | 週次ドラフト生成 |
-| GET | /api/drafts/latest | Basic | 最新ドラフト取得 |
-| GET | /api/used-news | Basic | 使用済みニュース一覧 |
-| POST | /api/used-news | Basic | 使用済みとして記録 |
-| POST | /api/videos/generate-from-latest | Basic | 最新ドラフトから動画生成 |
-| POST | /api/videos/generate-weekly-from-new-draft | Basic | 新規週次ドラフト生成から動画生成まで実行 |
-| GET | /api/videos | Basic | 生成済み動画一覧 |
-| GET | /api/videos/{video_id} | Basic | 生成済み動画メタデータ取得 |
-| GET | /api/videos/{video_id}/download | Basic | 動画ファイル取得 |
-| GET | /api/videos/{video_id}/thumbnail | Basic | サムネイル取得 |
-| POST | /api/videos/{video_id}/upload-youtube | Basic | YouTube へ限定公開でアップロード |
-| POST | /api/videos/{video_id}/publish | Basic | アップロード済み動画を公開に切り替え |
+| Method | Path                                       | 認証  | 説明                                     |
+| ------ | ------------------------------------------ | ----- | ---------------------------------------- |
+| GET    | /api/health                                | 不要  | ヘルスチェック（Cloud Run 用）           |
+| GET    | /api/news/weekly                           | Basic | 直近7日の全ニュース                      |
+| GET    | /api/news/priority-a                       | Basic | 優先度A・使用済み除外                    |
+| POST   | /api/drafts/generate-weekly                | Basic | 週次ドラフト生成                         |
+| GET    | /api/drafts/latest                         | Basic | 最新ドラフト取得                         |
+| GET    | /api/used-news                             | Basic | 使用済みニュース一覧                     |
+| POST   | /api/used-news                             | Basic | 使用済みとして記録                       |
+| POST   | /api/videos/generate-from-latest           | Basic | 最新ドラフトから動画生成                 |
+| POST   | /api/videos/generate-weekly-from-new-draft | Basic | 新規週次ドラフト生成から動画生成まで実行 |
+| GET    | /api/videos                                | Basic | 生成済み動画一覧                         |
+| GET    | /api/videos/{video_id}                     | Basic | 生成済み動画メタデータ取得               |
+| GET    | /api/videos/{video_id}/download            | Basic | 動画ファイル取得                         |
+| GET    | /api/videos/{video_id}/thumbnail           | Basic | サムネイル取得                           |
+| POST   | /api/videos/{video_id}/upload-youtube      | Basic | YouTube へ限定公開でアップロード         |
+| POST   | /api/videos/{video_id}/publish             | Basic | アップロード済み動画を公開に切り替え     |
 
 ---
 
