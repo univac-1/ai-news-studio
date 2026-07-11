@@ -1003,106 +1003,18 @@ def _render_illustration_slide(
         image.convert("RGB").save(path)
 
 
-_SONG_ACCENT = "#f472b6"
-_SONG_ACCENT_DIM = "#9d5470"
+def _render_song_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
+    """ずんだもんニュースソングのコーナー。MV映像を主役にするため、スライドには
+    背景だけを描く(タイトル・歌詞リスト・キャラクターの後乗せはしない)。
+    歌詞はフレーズごとの焼き込み字幕(SRT)として画面下に表示される。
 
-
-def _render_song_slide(
-    spec: SlideSpec,
-    path: Path,
-    compact: bool = False,
-    highlight_index: int | None = None,
-    zoom: float = 1.0,
-    overlay_only: bool = False,
-) -> None:
-    """ずんだもんニュースソングのコーナー。生成済みのミュージックビデオ風背景があれば
-    全画面に敷いて半透明の黒でトーンダウンし、なければ共通のダーク背景を使う。その上に
-    タイトル・音符アクセント・歌詞(センタリング)を並べ、右下にずんだもん(happy)を重ねる。
-
-    highlight_index が指定されている場合は、カラオケ風にその行だけ通常の見た目(白・太字)
-    で表示し、他の行は淡色にトーンダウンする(Noneなら全行が通常表示、既存呼び出し元との
-    互換を保つ)。zoomはspec.imageのMV背景をズームインする倍率(1.0で従来通り)。
-
-    overlay_only=Trueの場合はMV背景を描かず、半透明の黒スクリム・テキスト・キャラクター
-    だけのRGBA PNGを書き出す(Veo製の動くMV背景の上にffmpegで重ねる用。zoomは背景に
-    かかる演出のため無視される)。"""
-    if overlay_only:
-        # 動画背景の上でも歌詞の可読性を保つため、スクリムはオーバーレイ側に持つ
-        image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 140))
-    elif spec.image is not None:
-        if zoom != 1.0:
-            crop_w, crop_h = round(WIDTH * zoom), round(HEIGHT * zoom)
-            zoomed = _cover_crop(spec.image, crop_w, crop_h)
-            left, top = (crop_w - WIDTH) // 2, (crop_h - HEIGHT) // 2
-            background = zoomed.crop((left, top, left + WIDTH, top + HEIGHT))
-        else:
-            background = _cover_crop(spec.image, WIDTH, HEIGHT)
-        image = background.convert("RGBA")
-        # 歌詞の可読性を保つため、背景全体に約55%の黒オーバーレイを重ねる
-        dark_overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 140))
-        image = Image.alpha_composite(image, dark_overlay)
+    このPNGはVeo製の動くMV背景(slide.clip)が使えない場合の静止画フォールバック。"""
+    if spec.image is not None:
+        image = _cover_crop(spec.image, WIDTH, HEIGHT)
     else:
         image = _draw_dark_background()
-    draw = ImageDraw.Draw(image)
-    character_reserve = _character_reserve_width(spec)
-    content_width = WIDTH - 280 - character_reserve
-    content_left = 140
-    content_center = content_left + content_width / 2
-
-    draw.rectangle((80, 180, 96, 810), fill=_SONG_ACCENT)
-    _draw_header(draw, spec)
-
-    title_font = _load_font(_compact_base_size(64, compact), bold=True)
-    title_w = _text_width(title_font, spec.title)
-    title_bbox = title_font.getbbox(spec.title)
-    title_top = 170
-    draw.text(
-        (content_center - title_w / 2, title_top), spec.title, font=title_font, fill=_DARK_TITLE
-    )
-
-    # タイトル左右に音符アクセント(♪)を添えて「歌」であることを示す
-    note_font = _load_font(48, bold=True)
-    note_bbox = note_font.getbbox("♪")
-    note_y = title_top + (title_bbox[3] - title_bbox[1] - (note_bbox[3] - note_bbox[1])) / 2 - note_bbox[1] + title_bbox[1]
-    draw.text((content_center - title_w / 2 - 66, note_y), "♪", font=note_font, fill=_SONG_ACCENT)
-    draw.text((content_center + title_w / 2 + 26, note_y), "♪", font=note_font, fill=_SONG_ACCENT)
-
-    # 歌詞(最大4フレーズ)を等分の帯にセンタリングで描く。1帯に収まるよう
-    # 長い行はフォントを段階的に縮小する(_draw_fittedと同じ考え方)。
-    lines = [line for line in spec.lyrics if line] or spec.lyrics
-    n = max(len(lines), 1)
-    if highlight_index is not None and not (0 <= highlight_index < len(lines)):
-        highlight_index = None
-    top, bottom, gap = 340, 820, 16
-    band_h = (bottom - top - gap * (n - 1)) / n
-    lyric_base, lyric_min = _compact_base_size(46, compact), 28
-    y = top
-    for i, line in enumerate(lines):
-        is_dimmed = highlight_index is not None and i != highlight_index
-        text_fill = _DARK_FAINT if is_dimmed else _DARK_TITLE
-        note_fill = _SONG_ACCENT_DIM if is_dimmed else _SONG_ACCENT
-        size = lyric_base
-        font = _load_font(size, bold=True)
-        w = _text_width(font, line)
-        while w > content_width - 120 and size > lyric_min:
-            size -= 2
-            font = _load_font(size, bold=True)
-            w = _text_width(font, line)
-        bbox = font.getbbox(line or " ")
-        text_h = bbox[3] - bbox[1]
-        text_y = y + (band_h - text_h) / 2 - bbox[1]
-        draw.text((content_center - w / 2, text_y), line, font=font, fill=text_fill)
-        note_small = _load_font(30, bold=True)
-        draw.text((content_center - w / 2 - 44, text_y), "♪", font=note_small, fill=note_fill)
-        y += band_h + gap
-
-    draw.rectangle((80, 830, WIDTH - 80, 833), fill=_DARK_LINE)
     path.parent.mkdir(parents=True, exist_ok=True)
-    image = _paste_character_overlay(image, spec)
-    if overlay_only:
-        image.save(path)  # 背景クリップに重ねるため透明度(RGBA)を保持する
-    else:
-        image.convert("RGB").save(path)
+    image.convert("RGB").save(path)
 
 
 def _render_visual_panel(
@@ -2016,12 +1928,11 @@ async def _build_part(
         and slide.clip is not None
         and slide.clip.exists()
     )
+    # 歌はMV映像をそのまま見せる(歌詞は焼き込み字幕のみ)ためオーバーレイ不要。
+    # illustrationだけテキスト・スクリム・キャラの透明オーバーレイを重ねる
     overlay_path = slides_dir / f"slide_{index:03}_overlay.png"
-    if use_clip:
-        if slide.kind == "illustration":
-            _render_illustration_slide(slide, overlay_path, compact=compact, overlay_only=True)
-        else:
-            _render_song_slide(slide, overlay_path, compact=compact, overlay_only=True)
+    if use_clip and slide.kind == "illustration":
+        _render_illustration_slide(slide, overlay_path, compact=compact, overlay_only=True)
 
     # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
     # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
@@ -2115,60 +2026,30 @@ async def _build_part(
 
     # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
     # segmentの箇条書きは最初から全表示し、必要な場合だけリアクション用フレームを末尾に追加する。
-    # 背景クリップ使用時は静止スライドの代わりに透明オーバーレイをフレームにする
-    frames: list[tuple[Path, float]] = [(overlay_path if use_clip else slide_path, 0.0)]
+    # illustrationのクリップ使用時は静止スライドの代わりに透明オーバーレイをフレームにする
+    frames: list[tuple[Path, float]] = [
+        (overlay_path if use_clip and slide.kind == "illustration" else slide_path, 0.0)
+    ]
     if show_reaction_character:
         frames.append((reaction_slide_path, expert_duration))
-
-    if slide.kind == "song" and chunk_durations:
-        # カラオケ風演出: chunk_durationsの各エントリ(先頭は歌い出し前の無音、
-        # 以降は各フレーズ)を時系列にたどり、フレーズごとにハイライトした
-        # バリアントをそのフレーズの開始時刻から表示する。reuse_audioのリテイクでも
-        # reuse.chunk_durationsから同じタイムラインを再構築できる(音声・尺は不変)。
-        # 背景クリップ使用時はバリアントも透明オーバーレイで描く(ズームは背景演出
-        # なので動く背景に任せて無効化する)。
-        cumulative = 0.0
-        phrase_index = 0
-        for text, dur, _narrator in chunk_durations:
-            if text:
-                variant_path = slides_dir / f"slide_{index:03}_song_{phrase_index}.png"
-                _render_song_slide(
-                    slide,
-                    variant_path,
-                    compact=compact,
-                    highlight_index=phrase_index,
-                    zoom=1.0 if use_clip else 1.0 + 0.025 * (phrase_index + 1),
-                    overlay_only=use_clip,
-                )
-                frames.append((variant_path, cumulative))
-                phrase_index += 1
-            cumulative += dur
 
     frame_specs = _build_frame_timeline(frames, part_duration)
 
     if use_clip:
-        # 背景クリップをループ再生しつつ画面いっぱいに整え、透明オーバーレイを重ねる。
-        # フレームが複数ある場合(歌のカラオケ演出)は、overlayのenable=時間窓で
-        # 表示フレームを切り替える。字幕・フェード等(vf)は合成後の映像に適用する
+        # 背景クリップをループ再生しつつ画面いっぱいに整える。illustrationは
+        # 透明オーバーレイ(テキスト・スクリム・キャラ)を重ね、songはMV映像を
+        # そのまま見せる(歌詞は焼き込み字幕)。字幕・フェード等(vf)は最後に適用する
+        overlay_specs = frame_specs if slide.kind == "illustration" else []
         filter_parts = [
             f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={WIDTH}:{HEIGHT}[bg]"
         ]
         args = ["-stream_loop", "-1", "-i", str(slide.clip)]
         prev_label = "bg"
-        cursor = 0.0
-        for i, (frame_path, duration) in enumerate(frame_specs, start=1):
+        for i, (frame_path, _duration) in enumerate(overlay_specs, start=1):
             args += ["-loop", "1", "-i", f"slides/{frame_path.name}"]
-            start = cursor
-            cursor += duration
-            # 最後のフレームはパート末尾(フェードアウト・端数)まで表示し続ける
-            enable = (
-                f"gte(t,{start:.3f})"
-                if i == len(frame_specs)
-                else f"between(t,{start:.3f},{cursor:.3f})"
-            )
             label = f"ov{i}"
-            filter_parts.append(f"[{prev_label}][{i}:v]overlay=0:0:enable='{enable}'[{label}]")
+            filter_parts.append(f"[{prev_label}][{i}:v]overlay=0:0[{label}]")
             prev_label = label
         filter_parts.append(f"[{prev_label}]{vf}[vout]")
         args += [
@@ -2179,7 +2060,7 @@ async def _build_part(
             "-map",
             "[vout]",
             "-map",
-            f"{len(frame_specs) + 1}:a",
+            f"{len(overlay_specs) + 1}:a",
         ]
     elif len(frame_specs) > 1:
         filter_complex = _build_multi_frame_filter([duration for _, duration in frame_specs])

@@ -14,37 +14,34 @@ def _song_spec(image: Image.Image | None = None) -> SlideSpec:
     )
 
 
-class TestRenderSongSlideKaraoke:
-    """カラオケ演出(highlight_index/zoom)のスモークテスト。既存呼び出し(デフォルト引数)の
-    挙動を変えないことと、新しいキーワード引数がPNGを問題なく書き出せることを確認する。"""
+class TestRenderSongSlide:
+    """歌スライドは背景のみを描く(歌詞・タイトル・キャラの後乗せはしない。
+    歌詞はフレーズごとの焼き込み字幕で画面下に出す)。"""
 
-    def test_default_args_still_render_png(self, tmp_path):
-        # highlight_index=None, zoom=1.0(デフォルト)は既存呼び出し元と同じ挙動のはず
-        path = tmp_path / "default.png"
+    def test_renders_dark_fallback_without_image(self, tmp_path):
+        path = tmp_path / "no_image.png"
         _render_song_slide(_song_spec(), path)
         assert path.exists()
         with Image.open(path) as img:
             assert img.size == (WIDTH, HEIGHT)
 
-    def test_highlight_and_zoom_without_image_background(self, tmp_path):
-        # spec.imageがNone(ダークフォールバック)の場合はzoomを無視して描画できること
-        path = tmp_path / "no_image.png"
-        _render_song_slide(_song_spec(), path, highlight_index=1, zoom=1.05)
-        assert path.exists()
-        with Image.open(path) as img:
-            assert img.size == (WIDTH, HEIGHT)
-
-    def test_highlight_and_zoom_with_image_background(self, tmp_path):
-        # spec.imageがある場合、指定したzoom倍率でMV背景をズームインしたうえで描画できること
-        bg = Image.new("RGB", (640, 360), (30, 40, 60))
+    def test_renders_cover_cropped_mv_background(self, tmp_path):
+        # 16:9でないMV背景画像も全画面にカバークロップされて描画されること
+        bg = Image.new("RGB", (640, 480), (30, 40, 60))
         path = tmp_path / "with_image.png"
-        _render_song_slide(_song_spec(image=bg), path, highlight_index=1, zoom=1.05)
+        _render_song_slide(_song_spec(image=bg), path)
         assert path.exists()
         with Image.open(path) as img:
             assert img.size == (WIDTH, HEIGHT)
+            # 背景のみ(テキスト描画なし)なので、単色画像は単色のまま出力される
+            colors = img.convert("RGB").getcolors(maxcolors=16)
+            assert colors is not None and len(colors) == 1
 
-    def test_out_of_range_highlight_index_is_treated_as_none(self, tmp_path):
-        # 範囲外のhighlight_indexは例外を出さず、全行通常表示(None扱い)にフォールバックする
-        path = tmp_path / "out_of_range.png"
-        _render_song_slide(_song_spec(), path, highlight_index=99, zoom=1.0)
-        assert path.exists()
+    def test_background_only_has_no_character_overlay(self, tmp_path):
+        # 単色背景に対して出力も単色 = キャラクター等が合成されていないことの検証
+        bg = Image.new("RGB", (1920, 1080), (10, 20, 30))
+        path = tmp_path / "clean.png"
+        _render_song_slide(_song_spec(image=bg), path)
+        with Image.open(path) as img:
+            colors = img.convert("RGB").getcolors(maxcolors=16)
+            assert colors is not None and len(colors) == 1
