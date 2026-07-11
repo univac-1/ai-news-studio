@@ -58,6 +58,59 @@ def test_opening_context_suffix_keeps_topics_abstract():
     assert "do not render topic names" in suffix
 
 
+def test_opening_clip_uses_opening_model(monkeypatch, tmp_path):
+    calls: list[dict] = []
+
+    def fake_text_cache_path(model, prompt, target_seconds, resolution):
+        calls.append(
+            {
+                "kind": "cache",
+                "model": model,
+                "target_seconds": target_seconds,
+                "resolution": resolution,
+            }
+        )
+        return tmp_path / "opening.mp4"
+
+    def fake_generate_extended_clip_sync(model, prompts, target_seconds, **kwargs):
+        calls.append(
+            {
+                "kind": "generate",
+                "model": model,
+                "target_seconds": target_seconds,
+            }
+        )
+        return b"opening"
+
+    monkeypatch.setattr(video_assets.settings, "VIDEO_GEN_ENABLED", True)
+    monkeypatch.setattr(video_assets.settings, "VIDEO_GEN_OPENING_ENABLED", True)
+    monkeypatch.setattr(video_assets.settings, "GEMINI_PROJECT", "project")
+    monkeypatch.setattr(video_assets.settings, "VIDEO_GEN_MODEL", "veo-3.1-fast-generate-001")
+    monkeypatch.setattr(video_assets.settings, "VIDEO_GEN_OPENING_MODEL", "veo-3.1-generate-001")
+    monkeypatch.setattr(video_assets.settings, "VIDEO_GEN_OPENING_TARGET_SECONDS", 15)
+    monkeypatch.setattr(video_assets, "_text_cache_path", fake_text_cache_path)
+    monkeypatch.setattr(video_assets, "_generate_extended_clip_sync", fake_generate_extended_clip_sync)
+
+    import asyncio
+
+    result = asyncio.run(video_assets.generate_opening_clip("2026年7月第2週", ["AI検索"]))
+
+    assert result == tmp_path / "opening.mp4"
+    assert calls == [
+        {
+            "kind": "cache",
+            "model": "veo-3.1-generate-001",
+            "target_seconds": 15,
+            "resolution": "720p",
+        },
+        {
+            "kind": "generate",
+            "model": "veo-3.1-generate-001",
+            "target_seconds": 15,
+        },
+    ]
+
+
 def test_segment_motion_prompt_includes_news_context():
     segment = VideoSegment(
         number=1,

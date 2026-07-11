@@ -482,14 +482,15 @@ async def generate_opening_clip(
     ]
 
     cache_key_prompt = "\n--- extension ---\n".join(prompts)
-    cache_path = _text_cache_path(settings.VIDEO_GEN_MODEL, cache_key_prompt, target_seconds, "720p")
+    opening_model = settings.VIDEO_GEN_OPENING_MODEL or settings.VIDEO_GEN_MODEL
+    cache_path = _text_cache_path(opening_model, cache_key_prompt, target_seconds, "720p")
     if cache_path.exists():
         return cache_path
 
     try:
         clip_bytes = await asyncio.to_thread(
             _generate_extended_clip_sync,
-            settings.VIDEO_GEN_MODEL,
+            opening_model,
             prompts,
             target_seconds,
         )

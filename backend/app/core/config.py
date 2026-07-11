@@ -38,8 +38,10 @@ class Settings(BaseSettings):
     VIDEO_GEN_LOCATION: str = "us-central1"
     VIDEO_GEN_DURATION_SECONDS: int = 8
     # オープニングはVeo 3.1の動画拡張を使い、ループではない長尺背景を生成する。
-    # 拡張機能の入力制約に合わせ、内部では720pで生成する。
+    # オープニングは動画全体の第一印象に直結するため、fastではなく標準の
+    # 高品質モデルをデフォルトにする。拡張機能の入力制約に合わせ、内部では720pで生成する。
     VIDEO_GEN_OPENING_ENABLED: bool = True
+    VIDEO_GEN_OPENING_MODEL: str = "veo-3.1-generate-001"
     VIDEO_GEN_OPENING_TARGET_SECONDS: int = 15
     # 歌コーナー(オープニングソング)はVeoに映像と音声(歌唱・伴奏)を一括生成させる。
     # ベース8秒+動画拡張(1回あたり約7秒)でこの秒数付近まで延長する。
