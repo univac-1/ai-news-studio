@@ -1199,21 +1199,6 @@ def _render_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
         # segmentは巨大番号透かし+箇条書き構成のため縦バーは描かない
         draw.rectangle((80, 180, 96, 810), fill=accent)
 
-    if spec.kind == "segment":
-        # 巨大番号透かし(本文より先に描き、本文を上に載せる)
-        wm_font = _load_font(440, bold=True)
-        wm_text = f"{spec.number:02}"
-        wm_overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
-        wm_draw = ImageDraw.Draw(wm_overlay)
-        wm_draw.text(
-            (WIDTH - 60 - _text_width(wm_font, wm_text), 240),
-            wm_text,
-            font=wm_font,
-            fill=(255, 255, 255, 18),
-        )
-        image = Image.alpha_composite(image, wm_overlay)
-        draw = ImageDraw.Draw(image)
-
     if spec.kind == "hook":
         # 冒頭0〜5秒: ラベル + 大きな一言のみ(読ませない、聞かせる)
         hook_label_font = _load_font(36, bold=True)
@@ -1289,23 +1274,25 @@ def _render_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
         if spec.visual:
             _render_visual_panel(draw, spec.visual, accent)
 
-        # 箇条書き(旧Impact/Actionボックスの代替)。図解の有無で開始yを変える。
-        # 図解ありは残り高さが少ない(665〜820)ため max_lines=1 で先に縮小させ、
-        # バジェット超過の長文だけが最小サイズの折り返しになるようにする
-        bullet_label_font = _load_font(26, bold=True)
+        # 箇条書き(旧Impact/Actionボックスの代替)。ラベルと本文を同じ行に置くと
+        # 「注目ポイント」のラベル幅で本文領域が狭くなり、文字が過剰に縮小される。
+        # ラベルを上、本文を次行にして本文幅を確保する。
+        bullet_label_font = _load_font(28, bold=True)
         bullet_max_lines = _compact_max_lines(1 if spec.visual else 2, compact)
         y = 665 if spec.visual else 500
+        bullet_body_size = _compact_base_size(32 if spec.visual else 36, compact)
+        bullet_body_min_size = 26 if spec.visual else 28
+        bullet_body_width = max(760, WIDTH - 200 - character_reserve - 140)
         bullets = (("影響", spec.impact), ("注目ポイント", spec.action))
         for bullet_label, bullet_body in bullets:
-            # アクセント色の正方形ビュレット + ラベル + 同じ行から始まる本文
-            draw.rectangle((140, y + 11, 152, y + 23), fill=accent)
-            draw.text((164, y + 2), bullet_label, font=bullet_label_font, fill="#93c5fd")
-            body_x = 164 + _text_width(bullet_label_font, bullet_label) + 28
+            draw.rectangle((140, y + 13, 154, y + 27), fill=accent)
+            draw.text((170, y), bullet_label, font=bullet_label_font, fill="#93c5fd")
+            y += 38
             y = _draw_fitted(
-                draw, (body_x, y), bullet_body, _compact_base_size(30, compact), 22, _DARK_BODY,
-                max(520, WIDTH - 200 - character_reserve - body_x), 8, max_lines=bullet_max_lines,
+                draw, (170, y), bullet_body, bullet_body_size, bullet_body_min_size, _DARK_BODY,
+                bullet_body_width, 8, max_lines=bullet_max_lines,
             )
-            y += 40
+            y += 30 if spec.visual else 36
     else:
         _draw_wrapped(
             draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
