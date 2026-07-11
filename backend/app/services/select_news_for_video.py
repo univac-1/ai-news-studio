@@ -15,6 +15,11 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.+-]*")
 _SPACE_RE = re.compile(r"\s+")
 _URL_RE = re.compile(r"https?://\S+")
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]+")
+_MODEL_VERSION_RE = re.compile(
+    r"\b(?:"
+    r"gpt|claude|gemini|llama|mistral|qwen|deepseek|grok|command|nova|phi|o"
+    r")[a-z0-9.+-]*\d[a-z0-9.+-]*\b"
+)
 
 _STOP_TOKENS = {
     "about",
@@ -25,11 +30,23 @@ _STOP_TOKENS = {
     "available",
     "based",
     "brings",
+    "cost",
+    "costs",
+    "efficiency",
+    "efficient",
+    "family",
+    "families",
     "for",
+    "frontier",
     "from",
     "generative",
     "has",
     "how",
+    "improves",
+    "improved",
+    "improvement",
+    "improvements",
+    "intelligence",
     "into",
     "its",
     "launch",
@@ -45,6 +62,9 @@ _STOP_TOKENS = {
     "of",
     "on",
     "open",
+    "performance",
+    "price",
+    "pricing",
     "release",
     "released",
     "says",
@@ -74,6 +94,13 @@ def _normalize_text(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip()
 
 
+def _normalize_model_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).lower()
+    text = _URL_RE.sub(" ", text)
+    text = re.sub(r"[_/|:;,!?()[\]{}\"'`~]+", " ", text)
+    return _SPACE_RE.sub(" ", text).strip()
+
+
 def _item_text(item: NewsItem) -> str:
     return " ".join(
         [
@@ -98,6 +125,35 @@ def _tokens(text: str) -> set[str]:
     }
 
 
+def _high_signal_text(item: NewsItem) -> str:
+    return " ".join([item.title, item.summary, item.provider, item.model_name])
+
+
+def _known_value(value: str) -> bool:
+    return bool(value and value.strip() and value.strip().lower() != "unknown")
+
+
+def _model_mentions(item: NewsItem) -> set[str]:
+    text = _normalize_model_text(_high_signal_text(item))
+    mentions = set(_MODEL_VERSION_RE.findall(text))
+
+    if _known_value(item.model_name):
+        normalized_model = _normalize_model_text(item.model_name)
+        model_mentions = set(_MODEL_VERSION_RE.findall(normalized_model))
+        if model_mentions:
+            mentions.update(model_mentions)
+        else:
+            mentions.update(_tokens(item.model_name))
+
+    # Split forms such as "gpt 5.6" are not covered by the token regex above.
+    split_versions = re.findall(
+        r"\b(gpt|claude|gemini|llama|mistral|qwen|deepseek|grok|o)\s+(\d[\w.+-]*)\b",
+        text,
+    )
+    mentions.update(f"{name}-{version}" for name, version in split_versions)
+    return {mention for mention in mentions if mention and mention not in _STOP_TOKENS}
+
+
 def _cjk_ngrams(text: str, size: int = 4) -> set[str]:
     normalized = _normalize_text(text)
     chunks = _CJK_RE.findall(normalized)
@@ -113,11 +169,42 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(left | right)
 
 
+def _has_same_model_story(left: NewsItem, right: NewsItem) -> bool:
+    left_mentions = _model_mentions(left)
+    right_mentions = _model_mentions(right)
+    shared_mentions = left_mentions & right_mentions
+    if not shared_mentions:
+        return False
+
+    same_provider = (
+        _known_value(left.provider)
+        and _known_value(right.provider)
+        and _normalize_text(left.provider) == _normalize_text(right.provider)
+    )
+
+    left_tokens = _tokens(_high_signal_text(left))
+    right_tokens = _tokens(_high_signal_text(right))
+    shared_tokens = left_tokens & right_tokens
+    token_similarity = _jaccard(left_tokens, right_tokens)
+
+    if same_provider and (token_similarity >= 0.16 or len(shared_tokens) >= 2):
+        return True
+    return token_similarity >= 0.24 and len(shared_tokens) >= 3
+
+
 def _looks_like_same_story(left: NewsItem, right: NewsItem) -> bool:
     left_url = _canonical_url(left.url)
     right_url = _canonical_url(right.url)
     if left_url and left_url == right_url:
         return True
+
+    if _has_same_model_story(left, right):
+        return True
+
+    left_mentions = _model_mentions(left)
+    right_mentions = _model_mentions(right)
+    if left_mentions and right_mentions and not (left_mentions & right_mentions):
+        return False
 
     left_text = _item_text(left)
     right_text = _item_text(right)

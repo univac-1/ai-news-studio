@@ -72,6 +72,7 @@ _SONG_BG_PROMPT = (
     "A vibrant, completely wordless music-video key visual for a Japanese tech-news "
     "YouTube segment's concert-stage opening theme song.\n\n"
     "This week's AI news theme for subtle inspiration:\n{topic}\n\n"
+    "{lyrics_context}\n"
     "Depict an energetic pop-concert / stage-live atmosphere: a dark navy base, sweeping "
     "neon spotlights, glowing music notes drifting in the air, laser beams, light-particle "
     "confetti, and futuristic tech accents (glowing circuit trails, holographic panels) "
@@ -154,6 +155,20 @@ def _thumbnail_topic(draft: VideoPlanDraft) -> str:
     return "Important weekly artificial intelligence news."
 
 
+def _song_lyrics_context(song_lyrics: list[str] | None) -> str:
+    if not song_lyrics:
+        return ""
+    lyric_hint = " / ".join(" ".join(line.split())[:80] for line in song_lyrics if line)
+    if not lyric_hint:
+        return ""
+    return (
+        "Song lyric mood for visual rhythm and color inspiration:\n"
+        f"{lyric_hint}\n\n"
+        "Do not render the lyrics or any readable words; use them only to shape the "
+        "energy, timing, and emotional tone of the stage design.\n\n"
+    )
+
+
 async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
     """サムネイル用の背景画像(文字なし)を生成する。
 
@@ -174,7 +189,9 @@ async def generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
     return ThemeImages(thumbnail_bg=thumbnail_bg)
 
 
-async def generate_song_background(draft: VideoPlanDraft) -> Image.Image | None:
+async def generate_song_background(
+    draft: VideoPlanDraft, song_lyrics: list[str] | None = None
+) -> Image.Image | None:
     """ずんだもんニュースソング(歌コーナー)スライド用のミュージックビデオ風背景を生成する。
 
     GEMINI_PROJECT未設定・IMAGE_GEN_ENABLED=False・生成失敗時はNoneを返し、
@@ -185,7 +202,10 @@ async def generate_song_background(draft: VideoPlanDraft) -> Image.Image | None:
 
     return await _fetch_image(
         settings.IMAGE_GEN_SLIDE_MODEL,
-        _SONG_BG_PROMPT.format(topic=_thumbnail_topic(draft)),
+        _SONG_BG_PROMPT.format(
+            topic=_thumbnail_topic(draft),
+            lyrics_context=_song_lyrics_context(song_lyrics),
+        ),
     )
 
 

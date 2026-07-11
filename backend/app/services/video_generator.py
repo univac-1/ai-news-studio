@@ -25,7 +25,7 @@ from .image_assets import (
 )
 from .kana_reading import build_reading_map, to_voice_text
 from .song import check_song_support, generate_song_lyrics, synthesize_song
-from .video_assets import generate_segment_clips, generate_song_clip
+from .video_assets import generate_opening_clip, generate_segment_clips, generate_song_clip
 from .video_review import review_and_retake
 
 logger = logging.getLogger(__name__)
@@ -1055,6 +1055,69 @@ def _render_visual_panel(
             y += 40
 
 
+def _draw_opening_content(
+    draw: ImageDraw.ImageDraw,
+    spec: SlideSpec,
+    compact: bool,
+    content_width: int,
+) -> None:
+    title_font = _load_font(_compact_base_size(68, compact), bold=True)
+    _draw_wrapped(
+        draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
+        max_lines=_compact_max_lines(1, compact),
+    )
+    _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), _DARK_MUTED, content_width, 12, max_lines=1)
+    num_font = _load_font(26, bold=True)
+    y = 350
+    shown = spec.entries[:7]
+    for entry in shown:
+        style = category_style(entry.category)
+        draw.rounded_rectangle((140, y, 216, y + 44), radius=10, fill=style.color)
+        num_text = f"#{entry.number}"
+        _draw_text_vcentered(
+            draw,
+            int(140 + (76 - _text_width(num_font, num_text)) / 2),
+            y,
+            44,
+            num_text,
+            num_font,
+            "#ffffff",
+        )
+        _draw_fitted(
+            draw, (240, y + 2), entry.label, 36, 26, "#f1f5f9",
+            max(720, content_width - 100), 0, max_lines=1, bold=True,
+        )
+        y += 62
+    if len(spec.entries) > len(shown):
+        draw.text(
+            (240, y + 2),
+            f"…ほか {len(spec.entries) - len(shown)} 本",
+            font=_load_font(32),
+            fill=_DARK_FAINT,
+        )
+
+
+def _render_opening_overlay(spec: SlideSpec, path: Path, compact: bool = False) -> None:
+    """Veo製オープニング背景に重ねる透明オーバーレイ。"""
+    image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    character_reserve = _character_reserve_width(spec)
+    content_width = WIDTH - 280 - character_reserve
+
+    # 動く背景の上でも文字を読ませるため、左側を中心に薄いスクリムを敷く。
+    draw.rectangle((0, 0, WIDTH, HEIGHT), fill=(5, 10, 24, 90))
+    for x in range(0, WIDTH):
+        alpha = max(0, int(110 * (1 - x / WIDTH)))
+        draw.line(((x, 120), (x, HEIGHT)), fill=(0, 0, 0, alpha))
+    _draw_header(draw, spec)
+    draw.rectangle((80, 180, 96, 810), fill="#2563eb")
+    _draw_opening_content(draw, spec, compact, content_width)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = _paste_character_overlay(image, spec)
+    image.save(path)
+
+
 def _render_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
     """スライドを1枚描画してpathに保存する。
 
@@ -1124,39 +1187,7 @@ def _render_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
         )
     elif spec.kind == "opening":
         # 5〜20秒: 価値提示 + ラインナップ一覧
-        _draw_wrapped(
-            draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
-            max_lines=_compact_max_lines(1, compact),
-        )
-        _draw_wrapped(draw, (140, 280), spec.body, _load_font(32), _DARK_MUTED, content_width, 12, max_lines=1)
-        num_font = _load_font(26, bold=True)
-        y = 350
-        shown = spec.entries[:7]
-        for entry in shown:
-            style = category_style(entry.category)
-            draw.rounded_rectangle((140, y, 216, y + 44), radius=10, fill=style.color)
-            num_text = f"#{entry.number}"
-            _draw_text_vcentered(
-                draw,
-                int(140 + (76 - _text_width(num_font, num_text)) / 2),
-                y,
-                44,
-                num_text,
-                num_font,
-                "#ffffff",
-            )
-            _draw_fitted(
-                draw, (240, y + 2), entry.label, 36, 26, "#f1f5f9",
-                max(720, content_width - 100), 0, max_lines=1, bold=True,
-            )
-            y += 62
-        if len(spec.entries) > len(shown):
-            draw.text(
-                (240, y + 2),
-                f"…ほか {len(spec.entries) - len(shown)} 本",
-                font=_load_font(32),
-                fill=_DARK_FAINT,
-            )
+        _draw_opening_content(draw, spec, compact, content_width)
     elif spec.kind == "ranking":
         _draw_wrapped(
             draw, (140, 180), spec.title, title_font, _DARK_TITLE, content_width, 18,
@@ -1759,6 +1790,23 @@ def _display_label(segment: VideoSegment) -> str:
     return segment.headline.strip()
 
 
+def _video_news_contexts(draft: VideoPlanDraft) -> list[str]:
+    contexts: list[str] = []
+    for segment in draft.segments:
+        parts = [
+            f"#{segment.number}",
+            f"category={segment.category}" if segment.category else "",
+            _display_label(segment),
+            segment.summary,
+            f"impact: {segment.impact}" if segment.impact else "",
+            f"action: {segment.action}" if segment.action else "",
+        ]
+        context = " ".join(" ".join(part.split()) for part in parts if part)
+        if context:
+            contexts.append(context[:360])
+    return contexts
+
+
 def _build_slides(
     draft: VideoPlanDraft,
     segment_images: dict[int, Image.Image] | None = None,
@@ -1766,6 +1814,7 @@ def _build_slides(
     song_bg: Image.Image | None = None,
     segment_clips: dict[int, Path] | None = None,
     song_clip: Path | None = None,
+    opening_clip: Path | None = None,
 ) -> list[SlideSpec]:
     segment_images = segment_images or {}
     segment_clips = segment_clips or {}
@@ -1815,6 +1864,7 @@ def _build_slides(
             body=f"重要ニュース{len(draft.segments)}本を短時間でキャッチアップ",
             narration=draft.intro,
             entries=entries,
+            clip=opening_clip,
             narrator="zundamon",
         )
     )
@@ -1920,19 +1970,21 @@ async def _build_part(
 
     _render_slide(slide, slide_path, compact=compact)
 
-    # Veo製背景クリップ付きスライド(illustration / songのMV背景)は、テキスト・
+    # Veo製背景クリップ付きスライド(illustration / opening / songのMV背景)は、テキスト・
     # スクリム・キャラだけの透明オーバーレイPNGを別途描き、ffmpegでクリップの上に
     # 重ねる。クリップが無い(生成失敗・無効化)場合は従来どおり静止画スライドを使う
     use_clip = (
-        slide.kind in ("illustration", "song")
+        slide.kind in ("illustration", "song", "opening")
         and slide.clip is not None
         and slide.clip.exists()
     )
     # 歌はMV映像をそのまま見せる(歌詞は焼き込み字幕のみ)ためオーバーレイ不要。
-    # illustrationだけテキスト・スクリム・キャラの透明オーバーレイを重ねる
+    # illustration/openingはテキスト・スクリム・キャラの透明オーバーレイを重ねる
     overlay_path = slides_dir / f"slide_{index:03}_overlay.png"
     if use_clip and slide.kind == "illustration":
         _render_illustration_slide(slide, overlay_path, compact=compact, overlay_only=True)
+    elif use_clip and slide.kind == "opening":
+        _render_opening_overlay(slide, overlay_path, compact=compact)
 
     # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
     # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
@@ -2026,9 +2078,14 @@ async def _build_part(
 
     # 表示フレーム(画像パス, 表示開始時刻)のリストを組み立てる。
     # segmentの箇条書きは最初から全表示し、必要な場合だけリアクション用フレームを末尾に追加する。
-    # illustrationのクリップ使用時は静止スライドの代わりに透明オーバーレイをフレームにする
+    # クリップ使用時のillustration/openingは静止スライドの代わりに透明オーバーレイをフレームにする
     frames: list[tuple[Path, float]] = [
-        (overlay_path if use_clip and slide.kind == "illustration" else slide_path, 0.0)
+        (
+            overlay_path
+            if use_clip and slide.kind in ("illustration", "opening")
+            else slide_path,
+            0.0,
+        )
     ]
     if show_reaction_character:
         frames.append((reaction_slide_path, expert_duration))
@@ -2036,15 +2093,26 @@ async def _build_part(
     frame_specs = _build_frame_timeline(frames, part_duration)
 
     if use_clip:
-        # 背景クリップをループ再生しつつ画面いっぱいに整える。illustrationは
+        # 背景クリップを画面いっぱいに整える。openingはVeo拡張済みなのでループせず、
+        # illustration/songは短尺クリップをループする。illustration/openingは
         # 透明オーバーレイ(テキスト・スクリム・キャラ)を重ね、songはMV映像を
         # そのまま見せる(歌詞は焼き込み字幕)。字幕・フェード等(vf)は最後に適用する
-        overlay_specs = frame_specs if slide.kind == "illustration" else []
-        filter_parts = [
-            f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+        overlay_specs = frame_specs if slide.kind in ("illustration", "opening") else []
+        bg_filter = (
+            f"[0:v]tpad=stop_mode=clone:stop_duration={part_duration:.3f},"
+            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={WIDTH}:{HEIGHT}[bg]"
+            if slide.kind == "opening"
+            else f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT}[bg]"
+        )
+        filter_parts = [
+            bg_filter
         ]
-        args = ["-stream_loop", "-1", "-i", str(slide.clip)]
+        args = []
+        if slide.kind != "opening":
+            args += ["-stream_loop", "-1"]
+        args += ["-i", str(slide.clip)]
         prev_label = "bg"
         for i, (frame_path, _duration) in enumerate(overlay_specs, start=1):
             args += ["-loop", "1", "-i", f"slides/{frame_path.name}"]
@@ -2202,10 +2270,11 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     # ニュースごとのAI解説イラストを生成(未設定・失敗したセグメントは辞書に含まれない)
     segment_images = await generate_segment_images(draft.segments)
     _save_segment_image_assets(segment_images, work_dir / "assets")
+    news_contexts = _video_news_contexts(draft)
 
     # イラストをVeoのimage-to-videoで動くクリップにする(未設定・失敗した
     # セグメントは辞書に含まれず、静止イラストのままになる)
-    segment_clips = await generate_segment_clips(segment_images)
+    segment_clips = await generate_segment_clips(segment_images, draft.segments)
     segment_clips = _save_segment_clip_assets(segment_clips, work_dir / "assets")
 
     if theme.thumbnail_bg is None:
@@ -2234,7 +2303,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
 
         if song_lyrics:
             try:
-                song_bg = await generate_song_background(draft)
+                song_bg = await generate_song_background(draft, song_lyrics)
             except Exception:
                 logger.exception("song background generation failed; using dark fallback")
                 song_bg = None
@@ -2242,7 +2311,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     # MV背景をVeoで動くクリップにする(失敗・無効時はNoneで静止画のまま)
     song_clip: Path | None = None
     if song_bg is not None:
-        song_clip = await generate_song_clip(song_bg)
+        song_clip = await generate_song_clip(song_bg, song_lyrics, news_contexts)
         if song_clip is not None:
             clips_dir = work_dir / "assets" / "clips"
             clips_dir.mkdir(parents=True, exist_ok=True)
@@ -2254,6 +2323,25 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
                 logger.exception("failed to copy song clip: %s", song_clip)
                 song_clip = None
 
+    # オープニング背景はVeo拡張で長尺化し、ffmpeg側ではループさせない。
+    # 文字・キャラは後段で透明オーバーレイとして重ねる。
+    opening_clip: Path | None = None
+    opening_clip = await generate_opening_clip(
+        draft.week_label,
+        [_display_label(segment) for segment in draft.segments],
+        news_contexts,
+    )
+    if opening_clip is not None:
+        clips_dir = work_dir / "assets" / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        dest = clips_dir / "opening.mp4"
+        try:
+            shutil.copyfile(opening_clip, dest)
+            opening_clip = dest
+        except OSError:
+            logger.exception("failed to copy opening clip: %s", opening_clip)
+            opening_clip = None
+
     slides = _build_slides(
         draft,
         segment_images,
@@ -2261,6 +2349,7 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         song_bg=song_bg,
         segment_clips=segment_clips,
         song_clip=song_clip,
+        opening_clip=opening_clip,
     )
     reading_map = await build_reading_map(
         [slide.narration for slide in slides if slide.narration]

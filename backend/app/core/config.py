@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     VIDEO_GEN_MODEL: str = "veo-3.1-fast-generate-001"
     VIDEO_GEN_LOCATION: str = "us-central1"
     VIDEO_GEN_DURATION_SECONDS: int = 8
+    # オープニングはVeo 3.1の動画拡張を使い、ループではない長尺背景を生成する。
+    # 拡張機能の入力制約に合わせ、内部では720pで生成する。
+    VIDEO_GEN_OPENING_ENABLED: bool = True
+    VIDEO_GEN_OPENING_TARGET_SECONDS: int = 15
     CHARACTER_OVERLAY_ENABLED: bool = True
     CHARACTER_OVERLAY_NAME: str = "zundamon"
     BGM_ENABLED: bool = True

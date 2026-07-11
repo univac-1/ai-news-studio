@@ -216,6 +216,7 @@ async def fake_generate_segment_images(segments: list[VideoSegment]) -> dict[int
 
 async def fake_generate_segment_clips(
     segment_images: dict[int, Image.Image],
+    segments: list[VideoSegment] | None = None,
 ) -> dict[int, Path]:
     """generate_segment_clipsの代替。Veoを呼ばず、ffmpegのテストソースで動きのある
     クリップをセグメント1にだけ用意し、背景クリップ合成パスと静止画フォールバックの
@@ -240,11 +241,17 @@ async def fake_generate_segment_clips(
     return {1: clip_path}
 
 
-async def fake_generate_song_background(draft: VideoPlanDraft) -> Image.Image:
+async def fake_generate_song_background(
+    draft: VideoPlanDraft, song_lyrics: list[str] | None = None
+) -> Image.Image:
     return Image.new("RGB", (1280, 720), (40, 18, 60))
 
 
-async def fake_generate_song_clip(song_bg: Image.Image) -> Path:
+async def fake_generate_song_clip(
+    song_bg: Image.Image,
+    lyrics: list[str] | None = None,
+    news_contexts: list[str] | None = None,
+) -> Path:
     """generate_song_clipの代替。Veoを呼ばず、ffmpegのテストソースで動きのある
     MV背景クリップを作り、歌のクリップ背景+カラオケオーバーレイ合成パスを通す。"""
     clips_dir = Path(tempfile.mkdtemp(prefix="smoke_song_clip_"))
