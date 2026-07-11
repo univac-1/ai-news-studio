@@ -54,7 +54,7 @@ jobs:
               spec:
                 serviceAccountName: ${{ secrets.GCP_SERVICE_ACCOUNT }}
                 containerConcurrency: 1
-                timeoutSeconds: 1800
+                timeoutSeconds: 3600
                 containers:
                   - name: app
                     image: ${{ env.IMAGE }}:${{ github.sha }}
