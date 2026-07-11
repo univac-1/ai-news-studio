@@ -41,20 +41,18 @@ class Settings(BaseSettings):
     # 拡張機能の入力制約に合わせ、内部では720pで生成する。
     VIDEO_GEN_OPENING_ENABLED: bool = True
     VIDEO_GEN_OPENING_TARGET_SECONDS: int = 15
+    # 歌コーナー(オープニングソング)はVeoに映像と音声(歌唱・伴奏)を一括生成させる。
+    # ベース8秒+動画拡張(1回あたり約7秒)でこの秒数付近まで延長する。
+    VIDEO_GEN_SONG_TARGET_SECONDS: int = 15
     CHARACTER_OVERLAY_ENABLED: bool = True
     CHARACTER_OVERLAY_NAME: str = "zundamon"
     BGM_ENABLED: bool = True
     # 空なら backend/app/assets/bgm/ 配下の *.mp3/*.wav/*.m4a をソートして先頭を自動選択する
     BGM_FILE: str = ""
     BGM_VOLUME_DB: float = -22.0
+    # 歌コーナー(ずんだもんニュースソング)を入れるかどうか。歌唱・伴奏音声は
+    # VeoがMVクリップと一緒に生成する(video_assets.generate_song_clip)。
     SONG_ENABLED: bool = True
-    # 歌唱ソング(a cappella)にドラム+ベースの伴奏をミックスするかどうか
-    SONG_BACKING_ENABLED: bool = True
-    # 伴奏の音量調整(dB)。負値でボーカルより控えめにする
-    SONG_BACKING_GAIN_DB: float = -11.0
-    # 以下はヒントに過ぎず、実行時は /singers を問い合わせて実在するスタイルを優先する
-    VOICEVOX_SING_TEACHER_ID: int = 6000
-    VOICEVOX_SING_SPEAKER_ID: int = 3061
     # 動画生成後にGeminiが完成パートを見た目チェックし、はみ出し等を自動リテイクする機能。
     # GEMINI_PROJECT未設定時は自動的にスキップされる(video_review.review_and_retake参照)。
     REVIEW_ENABLED: bool = True

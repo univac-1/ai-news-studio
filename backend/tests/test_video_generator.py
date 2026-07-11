@@ -1,6 +1,13 @@
+import pytest
 from PIL import Image
 
-from app.services.video_generator import HEIGHT, WIDTH, SlideSpec, _render_song_slide
+from app.services.video_generator import (
+    HEIGHT,
+    WIDTH,
+    SlideSpec,
+    _even_song_entries,
+    _render_song_slide,
+)
 
 
 def _song_spec(image: Image.Image | None = None) -> SlideSpec:
@@ -45,3 +52,23 @@ class TestRenderSongSlide:
         with Image.open(path) as img:
             colors = img.convert("RGB").getcolors(maxcolors=16)
             assert colors is not None and len(colors) == 1
+
+
+class TestEvenSongEntries:
+    """Veoが歌唱音声ごと生成するため、歌詞字幕はクリップ音声の実尺を均等割りして出す。"""
+
+    def test_sums_to_total_and_leads_with_blank(self):
+        lyrics = ["あ", "い", "う", "え"]
+        entries = _even_song_entries(lyrics, 15.0)
+
+        assert entries[0][0] == ""  # 先頭は前奏(無音字幕)
+        assert [text for text, _ in entries[1:]] == lyrics
+        assert sum(duration for _, duration in entries) == pytest.approx(15.0)
+
+    def test_lead_is_capped_at_one_second(self):
+        entries = _even_song_entries(["あ", "い"], 60.0)
+        assert entries[0][1] == pytest.approx(1.0)
+
+    def test_short_clip_still_gives_positive_durations(self):
+        entries = _even_song_entries(["あ", "い", "う", "え"], 0.5)
+        assert all(duration > 0 for _, duration in entries)

@@ -24,7 +24,7 @@ from .image_assets import (
     generate_theme_images,
 )
 from .kana_reading import build_reading_map, to_voice_text
-from .song import check_song_support, generate_song_lyrics, synthesize_song
+from .song import generate_song_lyrics
 from .video_assets import generate_opening_clip, generate_segment_clips, generate_song_clip
 from .video_review import review_and_retake
 
@@ -330,6 +330,44 @@ def _write_silent_wav(
         output.setsampwidth(sample_width)
         output.setframerate(frame_rate)
         output.writeframes(b"\x00" * frame_count * channels * sample_width)
+
+
+def _extract_song_audio(clip_path: Path, out_path: Path) -> float:
+    """Veoが生成した歌クリップ(mp4)から音声トラックを取り出し、ナレーション音声
+    パイプラインと同じ24kHz/16bit/モノラルのwavとして書き出す。戻り値は秒数。
+
+    クリップに音声トラックがない場合はffmpegが失敗し、例外がそのまま伝播する
+    (呼び出し側で歌コーナーごとスキップする)。
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_ffmpeg(
+        [
+            "-i",
+            str(clip_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            str(out_path),
+        ]
+    )
+    with wave.open(str(out_path), "rb") as wav:
+        return wav.getnframes() / wav.getframerate()
+
+
+def _even_song_entries(lyrics: list[str], total_seconds: float) -> list[tuple[str, float]]:
+    """歌の字幕(SRT)用に、各フレーズの(テキスト, 秒数)を返す。
+
+    Veoが歌唱音声ごと生成するためフレーズごとの正確なタイミングは分からない。
+    先頭に短い前奏を("", 秒数)として置き、残りをフレーズ数で均等割りする
+    (エントリ数は 1(前奏) + フレーズ数)。
+    """
+    lead = min(1.0, total_seconds * 0.08)
+    per_phrase = max((total_seconds - lead) / max(len(lyrics), 1), 0.1)
+    return [("", lead)] + [(text, per_phrase) for text in lyrics]
 
 
 def _format_chapter_time(seconds: float) -> str:
@@ -2015,8 +2053,9 @@ async def _build_part(
             part_duration = DIVIDER_DURATION
             fade_duration = 0.3
         elif slide.kind == "song":
-            # 歌唱音声はループ冒頭で既に合成済み(probe_path)。パート番号確定後の
-            # 正式なaudio_pathへ移し、通常パートと同じくSRT・フェード・loudnormを適用する
+            # 歌唱音声はループ冒頭でVeoの歌クリップから抽出済み(probe_path)。
+            # パート番号確定後の正式なaudio_pathへ移し、通常パートと同じく
+            # SRT・フェード・loudnormを適用する
             probe_path = audio_dir / "song_probe.wav"
             probe_path.replace(audio_path)
             chunk_durations = [(text, dur, "zundamon") for text, dur in (song_entries or [])]
@@ -2093,8 +2132,9 @@ async def _build_part(
     frame_specs = _build_frame_timeline(frames, part_duration)
 
     if use_clip:
-        # 背景クリップを画面いっぱいに整える。openingはVeo拡張済みなのでループせず、
-        # illustration/songは短尺クリップをループする。illustration/openingは
+        # 背景クリップを画面いっぱいに整える。opening/songはVeo拡張済みの長尺
+        # クリップなのでループせず(不足分は最終フレームを引き伸ばす)、
+        # illustrationは短尺クリップをループする。illustration/openingは
         # 透明オーバーレイ(テキスト・スクリム・キャラ)を重ね、songはMV映像を
         # そのまま見せる(歌詞は焼き込み字幕)。字幕・フェード等(vf)は最後に適用する
         overlay_specs = frame_specs if slide.kind in ("illustration", "opening") else []
@@ -2102,7 +2142,7 @@ async def _build_part(
             f"[0:v]tpad=stop_mode=clone:stop_duration={part_duration:.3f},"
             f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={WIDTH}:{HEIGHT}[bg]"
-            if slide.kind == "opening"
+            if slide.kind in ("opening", "song")
             else f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={WIDTH}:{HEIGHT}[bg]"
         )
@@ -2110,7 +2150,7 @@ async def _build_part(
             bg_filter
         ]
         args = []
-        if slide.kind != "opening":
+        if slide.kind == "illustration":
             args += ["-stream_loop", "-1"]
         args += ["-i", str(slide.clip)]
         prev_label = "bg"
@@ -2284,19 +2324,18 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         )
     _render_thumbnail(draft, work_dir / "thumbnail.png", background=theme.thumbnail_bg)
 
-    # ずんだもんニュースソング(週次まとめの歌唱コーナー)。VOICEVOXが歌唱合成に
-    # 対応していない・歌詞生成/合成に失敗した場合は静かにスキップし、通常の
-    # 動画生成を止めない。
+    # ずんだもんニュースソング(オープニングソングのコーナー)。歌詞はGeminiで
+    # 作り、MV映像と歌唱・伴奏音声はVeoが丸ごと生成する。歌詞生成・クリップ生成に
+    # 失敗した場合は静かにスキップし、通常の動画生成を止めない。
     song_lyrics: list[str] | None = None
     song_bg: Image.Image | None = None
     if settings.SONG_ENABLED:
         try:
-            if await check_song_support():
-                song_lyrics = await generate_song_lyrics(draft)
-                (work_dir / "song_lyrics.json").write_text(
-                    json.dumps({"phrases": song_lyrics}, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+            song_lyrics = await generate_song_lyrics(draft)
+            (work_dir / "song_lyrics.json").write_text(
+                json.dumps({"phrases": song_lyrics}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except Exception:
             logger.exception("song lyrics generation failed; skipping song corner")
             song_lyrics = None
@@ -2305,12 +2344,13 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             try:
                 song_bg = await generate_song_background(draft, song_lyrics)
             except Exception:
-                logger.exception("song background generation failed; using dark fallback")
+                logger.exception("song background generation failed; generating song clip without image")
                 song_bg = None
 
-    # MV背景をVeoで動くクリップにする(失敗・無効時はNoneで静止画のまま)
+    # 歌のMVクリップ(映像+歌唱・伴奏音声)をVeoで生成する。音声込みのクリップが
+    # 得られなかった場合は歌コーナーごとスキップする(VOICEVOX歌唱へのフォールバックはない)
     song_clip: Path | None = None
-    if song_bg is not None:
+    if song_lyrics:
         song_clip = await generate_song_clip(song_bg, song_lyrics, news_contexts)
         if song_clip is not None:
             clips_dir = work_dir / "assets" / "clips"
@@ -2322,6 +2362,9 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
             except OSError:
                 logger.exception("failed to copy song clip: %s", song_clip)
                 song_clip = None
+        if song_clip is None:
+            logger.warning("song clip (with Veo audio) unavailable; skipping song corner")
+            song_lyrics = None
 
     # オープニング背景はVeo拡張で長尺化し、ffmpeg側ではループさせない。
     # 文字・キャラは後段で透明オーバーレイとして重ねる。
@@ -2366,14 +2409,16 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     for slide in slides:
         song_entries: list[tuple[str, float]] | None = None
         if slide.kind == "song":
-            # 歌唱合成はVOICEVOX呼び出しを伴い失敗しうる。失敗時はこのスライド
-            # 丸ごとをスキップし、パート番号・concatリストの連番は乱れないようにする
+            # 歌唱・伴奏音声はVeoの歌クリップに含まれているので、mp4から抽出する。
+            # 音声トラックがない等で失敗した場合はこのスライド丸ごとをスキップし、
+            # パート番号・concatリストの連番は乱れないようにする
             # (part_numberをまだ進めていないので、後続スライドの番号もずれない)。
             probe_path = audio_dir / "song_probe.wav"
             try:
-                song_entries = await synthesize_song(slide.lyrics, probe_path)
+                song_duration = _extract_song_audio(slide.clip, probe_path)
+                song_entries = _even_song_entries(slide.lyrics, song_duration)
             except Exception:
-                logger.exception("song synthesis failed; skipping song corner")
+                logger.exception("song audio extraction failed; skipping song corner")
                 continue
 
         part_number += 1

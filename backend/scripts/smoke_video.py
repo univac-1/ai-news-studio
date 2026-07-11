@@ -158,49 +158,8 @@ async def fake_synthesize_voice(
     return chunk_durations
 
 
-async def fake_check_song_support() -> bool:
-    return True
-
-
 async def fake_generate_song_lyrics(draft: VideoPlanDraft) -> list[str]:
     return list(song_module.FALLBACK_LYRICS)
-
-
-async def fake_synthesize_song(phrases: list[str], out_path: Path) -> list[tuple[str, float]]:
-    """synthesize_songの代替。VOICEVOXを呼ばず、MELODY_TEMPLATEのMIDIノート番号を
-    サイン波に変換して書き出す(休符は無音)。戻り値は実装と同じphrase_timings。"""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    frame_rate = song_module.FRAMES_PER_SECOND
-    sample_rate = 24000
-
-    notes: list[tuple[int | None, int]] = [(None, song_module.LEADING_REST_FRAMES)]
-    last_index = len(song_module.MELODY_TEMPLATE) - 1
-    for i, phrase in enumerate(song_module.MELODY_TEMPLATE):
-        for note in phrase.notes:
-            notes.append((note.key, note.frame_length))
-        notes.append(
-            (None, song_module.INTER_PHRASE_REST_FRAMES if i < last_index else song_module.TRAILING_REST_FRAMES)
-        )
-
-    buf = bytearray()
-    for key, frame_length in notes:
-        duration = frame_length / frame_rate
-        n_samples = max(int(duration * sample_rate), 1)
-        if key is None:
-            buf += b"\x00\x00" * n_samples
-        else:
-            freq = 440.0 * 2 ** ((key - 69) / 12)
-            for i in range(n_samples):
-                sample = int(8000 * math.sin(2 * math.pi * freq * i / sample_rate))
-                buf += struct.pack("<h", sample)
-
-    with wave.open(str(out_path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(bytes(buf))
-
-    return song_module.phrase_timings(phrases)
 
 
 async def fake_generate_theme_images(draft: VideoPlanDraft) -> ThemeImages:
@@ -248,12 +207,12 @@ async def fake_generate_song_background(
 
 
 async def fake_generate_song_clip(
-    song_bg: Image.Image,
+    song_bg: Image.Image | None,
     lyrics: list[str] | None = None,
     news_contexts: list[str] | None = None,
 ) -> Path:
-    """generate_song_clipの代替。Veoを呼ばず、ffmpegのテストソースで動きのある
-    MV背景クリップを作り、歌のクリップ背景+カラオケオーバーレイ合成パスを通す。"""
+    """generate_song_clipの代替。Veoを呼ばず、ffmpegのテストソース+サイン波音声で
+    音声トラック付きのMVクリップを作り、歌音声のmp4抽出パスまで含めて通す。"""
     clips_dir = Path(tempfile.mkdtemp(prefix="smoke_song_clip_"))
     clip_path = clips_dir / "song.mp4"
     subprocess.run(
@@ -263,9 +222,16 @@ async def fake_generate_song_clip(
             "-f",
             "lavfi",
             "-i",
-            "gradients=size=1920x1080:rate=30:duration=2",
+            "gradients=size=1920x1080:rate=30:duration=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=24000:duration=4",
             "-pix_fmt",
             "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
             str(clip_path),
         ],
         check=True,
@@ -280,9 +246,7 @@ async def fake_build_reading_map(texts: list[str]) -> dict[str, str]:
 
 def apply_patches() -> None:
     video_generator._synthesize_voice = fake_synthesize_voice
-    video_generator.check_song_support = fake_check_song_support
     video_generator.generate_song_lyrics = fake_generate_song_lyrics
-    video_generator.synthesize_song = fake_synthesize_song
     video_generator.generate_theme_images = fake_generate_theme_images
     video_generator.generate_segment_images = fake_generate_segment_images
     video_generator.generate_segment_clips = fake_generate_segment_clips
