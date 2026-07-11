@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import shutil
 import subprocess
 import wave
 from dataclasses import dataclass, field, replace
@@ -24,6 +25,7 @@ from .image_assets import (
 )
 from .kana_reading import build_reading_map, to_voice_text
 from .song import check_song_support, generate_song_lyrics, synthesize_song
+from .video_assets import generate_segment_clips
 from .video_review import review_and_retake
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,9 @@ class SlideSpec:
     visual: SegmentVisual | None = None
     entries: list[SlideEntry] = field(default_factory=list)
     image: Image.Image | None = None
+    # illustrationスライド用のVeo製背景クリップ(work_dir/assets/clips配下のmp4)。
+    # Noneならimage(静止イラスト)またはダーク背景で描画する
+    clip: Path | None = None
     week_label: str = ""
     narrator: str = "zundamon"
     reaction_line: str = ""
@@ -941,11 +946,18 @@ def _render_divider_slide(spec: SlideSpec, path: Path, compact: bool = False) ->
     image.convert("RGB").save(path)
 
 
-def _render_illustration_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
+def _render_illustration_slide(
+    spec: SlideSpec, path: Path, compact: bool = False, overlay_only: bool = False
+) -> None:
     """ニュースごとのAI解説イラストスライド(区切りを兼ねる)。
-    全画面イラスト(なければダーク背景) + 左下に巨大#N・カテゴリチップ・日本語タイトル。"""
+    全画面イラスト(なければダーク背景) + 左下に巨大#N・カテゴリチップ・日本語タイトル。
+
+    overlay_only=Trueの場合は背景を完全透明にし、スクリム・テキスト・キャラクター
+    だけを描いたRGBA PNGを書き出す(Veo製背景クリップの上にffmpegで重ねる用)。"""
     style = category_style(spec.category)
-    if spec.image is not None:
+    if overlay_only:
+        image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    elif spec.image is not None:
         image = _cover_crop(spec.image, WIDTH, HEIGHT).convert("RGBA")
     else:
         image = _draw_dark_background()
@@ -985,7 +997,10 @@ def _render_illustration_slide(spec: SlideSpec, path: Path, compact: bool = Fals
 
     path.parent.mkdir(parents=True, exist_ok=True)
     image = _paste_character_overlay(image, spec)
-    image.convert("RGB").save(path)
+    if overlay_only:
+        image.save(path)  # 背景クリップに重ねるため透明部分(RGBA)を保持する
+    else:
+        image.convert("RGB").save(path)
 
 
 _SONG_ACCENT = "#f472b6"
@@ -1786,6 +1801,29 @@ def _save_segment_image_assets(segment_images: dict[int, Image.Image], assets_di
         image.save(assets_dir / f"segment_{number:02}.png")
 
 
+def _save_segment_clip_assets(
+    segment_clips: dict[int, Path], assets_dir: Path
+) -> dict[int, Path]:
+    """キャッシュ上のVeoクリップを成果物ディレクトリへコピーし、コピー先のパスを返す。
+
+    work_dir配下に置くことで成果物が自己完結し、リテイク時もキャッシュの掃除に
+    影響されない。コピーに失敗したセグメントは辞書から外す(=静止画フォールバック)。"""
+    saved: dict[int, Path] = {}
+    if not segment_clips:
+        return saved
+    clips_dir = assets_dir / "clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    for number, clip in segment_clips.items():
+        dest = clips_dir / f"segment_{number:02}.mp4"
+        try:
+            shutil.copyfile(clip, dest)
+        except OSError:
+            logger.exception("failed to copy segment clip: %s", clip)
+            continue
+        saved[number] = dest
+    return saved
+
+
 def _display_label(segment: VideoSegment) -> str:
     """スライドに出す表示ラベル。
 
@@ -1803,8 +1841,10 @@ def _build_slides(
     segment_images: dict[int, Image.Image] | None = None,
     song_lyrics: list[str] | None = None,
     song_bg: Image.Image | None = None,
+    segment_clips: dict[int, Path] | None = None,
 ) -> list[SlideSpec]:
     segment_images = segment_images or {}
+    segment_clips = segment_clips or {}
     entries = [
         SlideEntry(
             number=segment.number,
@@ -1868,6 +1908,7 @@ def _build_slides(
                 number=segment.number,
                 category=segment.category,
                 image=segment_images.get(segment.number),
+                clip=segment_clips.get(segment.number),
                 week_label=draft.week_label,
                 narrator="zundamon",
             )
@@ -1953,6 +1994,14 @@ async def _build_part(
     part_srt_path = work_dir / part_srt_rel
 
     _render_slide(slide, slide_path, compact=compact)
+
+    # Veo製背景クリップ付きillustrationは、テキスト・スクリム・キャラだけの
+    # 透明オーバーレイPNGを別途描き、ffmpegでクリップの上に重ねる。
+    # クリップが無い(生成失敗・無効化)場合は従来どおり静止画スライドを使う
+    use_clip = slide.kind == "illustration" and slide.clip is not None and slide.clip.exists()
+    overlay_path = slides_dir / f"slide_{index:03}_overlay.png"
+    if use_clip:
+        _render_illustration_slide(slide, overlay_path, compact=compact, overlay_only=True)
 
     # segmentは解説中はキャラ非表示だが、直後の感想パートでは同じ画面のまま
     # ずんだもんが現れる2枚目のフレームを用意し、その切り替わりで表現する
@@ -2073,7 +2122,33 @@ async def _build_part(
 
     frame_specs = _build_frame_timeline(frames, part_duration)
 
-    if len(frame_specs) > 1:
+    if use_clip:
+        # 背景クリップをループ再生しつつ画面いっぱいに整え、透明オーバーレイを重ねる。
+        # 字幕・フェード等(vf)はオーバーレイ合成後の映像に適用する
+        filter_complex = (
+            f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT}[bg];"
+            f"[bg][1:v]overlay=0:0[ov];[ov]{vf}[vout]"
+        )
+        args = [
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(slide.clip),
+            "-loop",
+            "1",
+            "-i",
+            f"slides/{overlay_path.name}",
+            "-i",
+            f"audio/audio_{index:03}.wav",
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[vout]",
+            "-map",
+            "2:a",
+        ]
+    elif len(frame_specs) > 1:
         filter_complex = _build_multi_frame_filter([duration for _, duration in frame_specs])
         filter_complex += f";[vcat]{vf}[vout]"
         args = []
@@ -2214,6 +2289,11 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
     segment_images = await generate_segment_images(draft.segments)
     _save_segment_image_assets(segment_images, work_dir / "assets")
 
+    # イラストをVeoのimage-to-videoで動くクリップにする(未設定・失敗した
+    # セグメントは辞書に含まれず、静止イラストのままになる)
+    segment_clips = await generate_segment_clips(segment_images)
+    segment_clips = _save_segment_clip_assets(segment_clips, work_dir / "assets")
+
     if theme.thumbnail_bg is None:
         raise ThumbnailGenerationError(
             "サムネイル背景画像の生成に失敗しました。IMAGE_GEN_ENABLED と GEMINI_PROJECT、"
@@ -2245,7 +2325,13 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
                 logger.exception("song background generation failed; using dark fallback")
                 song_bg = None
 
-    slides = _build_slides(draft, segment_images, song_lyrics=song_lyrics, song_bg=song_bg)
+    slides = _build_slides(
+        draft,
+        segment_images,
+        song_lyrics=song_lyrics,
+        song_bg=song_bg,
+        segment_clips=segment_clips,
+    )
     reading_map = await build_reading_map(
         [slide.narration for slide in slides if slide.narration]
         + [slide.reaction_line for slide in slides if slide.reaction_line]
@@ -2298,8 +2384,9 @@ async def generate_video_from_draft(draft: VideoPlanDraft) -> VideoArtifact:
         record = part_records[part_index - 1]
         slide_for_retake = record.slide
         if drop_image:
-            # illustrationスライドの生成イラストを外し、ダーク背景フォールバックにする
-            slide_for_retake = replace(slide_for_retake, image=None)
+            # illustrationスライドの生成イラスト・背景クリップを外し、
+            # ダーク背景フォールバックにする
+            slide_for_retake = replace(slide_for_retake, image=None, clip=None)
         updated = await _build_part(
             slide_for_retake,
             record.part_number,

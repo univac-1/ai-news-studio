@@ -18,6 +18,7 @@ import math
 import struct
 import subprocess
 import sys
+import tempfile
 import wave
 from pathlib import Path
 
@@ -213,6 +214,32 @@ async def fake_generate_segment_images(segments: list[VideoSegment]) -> dict[int
     return {}
 
 
+async def fake_generate_segment_clips(
+    segment_images: dict[int, Image.Image],
+) -> dict[int, Path]:
+    """generate_segment_clipsの代替。Veoを呼ばず、ffmpegのテストソースで動きのある
+    クリップをセグメント1にだけ用意し、背景クリップ合成パスと静止画フォールバックの
+    両方を通す。"""
+    clips_dir = Path(tempfile.mkdtemp(prefix="smoke_clips_"))
+    clip_path = clips_dir / "segment_01.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1920x1080:rate=30:duration=2",
+            "-pix_fmt",
+            "yuv420p",
+            str(clip_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return {1: clip_path}
+
+
 async def fake_build_reading_map(texts: list[str]) -> dict[str, str]:
     return {}
 
@@ -224,6 +251,7 @@ def apply_patches() -> None:
     video_generator.synthesize_song = fake_synthesize_song
     video_generator.generate_theme_images = fake_generate_theme_images
     video_generator.generate_segment_images = fake_generate_segment_images
+    video_generator.generate_segment_clips = fake_generate_segment_clips
     video_generator.build_reading_map = fake_build_reading_map
 
 
