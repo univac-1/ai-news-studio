@@ -7,3 +7,7 @@ def test_ai_expert_is_read_with_japanese_term_reading():
 
 def test_ai_news_still_uses_ai_reading():
     assert to_voice_text("AIニュースをお届けします。") == "エーアイニュースをお届けします。"
+
+
+def test_gpt_live_uses_live_reading():
+    assert to_voice_text("GPT-Liveは新しい音声モデルです。") == "ジーピーティーライブは新しい音声モデルです。"

@@ -16,6 +16,7 @@ CUSTOM_READINGS: dict[str, str] = {
     "Stability AI": "スタビリティエーアイ",
     "Vertex AI": "バーテックスエーアイ",
     "ChatGPT": "チャットジーピーティー",
+    "GPT-Live": "ジーピーティーライブ",
     "GPT-4o": "ジーピーティーフォーオー",
     "Anthropic": "アンソロピック",
     "DeepSeek": "ディープシーク",
