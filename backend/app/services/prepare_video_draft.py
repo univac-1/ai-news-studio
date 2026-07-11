@@ -32,7 +32,7 @@ from .generate_weekly_video_plan import (
     template_intro_line,
     template_reaction_line,
 )
-from .polish_narration import _parse_visual
+from .polish_narration import _parse_visual, sanitize_spoken_speaker_labels
 
 # セキュリティカテゴリのニュースでも、防御ツールの紹介記事などには汎用攻撃フローを
 # 付けたくない。攻撃・被害を示すキーワードを含む場合のみ図解を補う。
@@ -234,7 +234,28 @@ async def prepare_draft_for_video(draft: VideoPlanDraft) -> VideoPlanDraft:
             updates["reaction_line"] = template_reaction_line(seg.number)
         if updates:
             seg = seg.model_copy(update=updates)
+        seg = seg.model_copy(
+            update={
+                "narration": sanitize_spoken_speaker_labels(seg.narration),
+                "intro_line": sanitize_spoken_speaker_labels(seg.intro_line),
+                "reaction_line": sanitize_spoken_speaker_labels(seg.reaction_line),
+            }
+        )
         with_intro_line.append(seg)
     segments = with_intro_line
 
-    return draft.model_copy(update={"segments": segments, "hook": hook, "intro": intro})
+    narration_script = f"【フック】\n{sanitize_spoken_speaker_labels(hook)}\n\n"
+    narration_script += f"【オープニング】\n{sanitize_spoken_speaker_labels(intro)}\n\n"
+    for seg in segments:
+        narration_script += f"{seg.narration}\n\n"
+    narration_script += f"【まとめ】\n{sanitize_spoken_speaker_labels(draft.outro)}"
+
+    return draft.model_copy(
+        update={
+            "segments": segments,
+            "hook": sanitize_spoken_speaker_labels(hook),
+            "intro": sanitize_spoken_speaker_labels(intro),
+            "outro": sanitize_spoken_speaker_labels(draft.outro),
+            "narration_script": narration_script,
+        }
+    )

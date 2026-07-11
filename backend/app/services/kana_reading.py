@@ -10,6 +10,7 @@ from ..core.config import settings
 # AI関連の固有名詞はalkanaの一般英語辞書に無い・読みが特殊なため、優先辞書で変換する。
 # 複数語エントリを含むため、長いキーから先にマッチさせる。
 CUSTOM_READINGS: dict[str, str] = {
+    "AI専門家": "エーアイせんもんか",
     "Google DeepMind": "グーグルディープマインド",
     "Hugging Face": "ハギングフェイス",
     "Stability AI": "スタビリティエーアイ",

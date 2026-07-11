@@ -99,6 +99,46 @@ Cloud Run にデプロイする際、`BASIC_AUTH_USERNAME` / `BASIC_AUTH_PASSWOR
 
 ---
 
+## 週次動画の自動アップロードとメール通知
+
+週次動画生成後に、生成済み動画を YouTube へ **限定公開(unlisted)** で自動アップロードし、限定公開URLと動画内容をメールで通知できます。
+
+YouTube 認証情報の取得手順は [docs/youtube-oauth.md](docs/youtube-oauth.md) を参照してください。Google Cloud Console で YouTube Data API v3 を有効化し、OAuth クライアントID（Desktop app）を作成したあと、以下でリフレッシュトークンを取得します。
+
+```bash
+cd backend
+uv run python scripts/get_youtube_refresh_token.py <CLIENT_ID> <CLIENT_SECRET>
+```
+
+`backend/.env` には以下を設定します。
+
+```env
+YOUTUBE_CLIENT_ID=xxxx
+YOUTUBE_CLIENT_SECRET=yyyy
+YOUTUBE_REFRESH_TOKEN=zzzz
+YOUTUBE_UPLOAD_ENABLED=true
+
+WEEKLY_VIDEO_SCHEDULE_ENABLED=true
+WEEKLY_VIDEO_SCHEDULE_TIMEZONE=Asia/Tokyo
+WEEKLY_VIDEO_SCHEDULE_HOUR=8
+WEEKLY_VIDEO_SCHEDULE_MINUTE=0
+
+WEEKLY_VIDEO_NOTIFY_TO=recipient@example.com
+WEEKLY_VIDEO_NOTIFY_FROM=sender@example.com
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=sender@example.com
+SMTP_PASSWORD=xxxx
+SMTP_USE_TLS=true
+SMTP_USE_SSL=false
+```
+
+成功メールには、動画タイトル、生成ID、限定公開URL、YouTube説明文、チャプター、ハッシュタグ、採用ニュースごとの要約・影響・アクション・ソース、参照URLが含まれます。失敗時は例外内容をメール通知します。
+
+> **注意:** 2020年7月28日以降に作成された未検証の YouTube API プロジェクトでは、アップロード動画が private に制限される場合があります。限定公開運用を継続する場合は、Google / YouTube 側の検証や監査要件を確認してください。
+
+---
+
 ## API エンドポイント
 
 | Method | Path | 認証 | 説明 |
@@ -110,6 +150,14 @@ Cloud Run にデプロイする際、`BASIC_AUTH_USERNAME` / `BASIC_AUTH_PASSWOR
 | GET | /api/drafts/latest | Basic | 最新ドラフト取得 |
 | GET | /api/used-news | Basic | 使用済みニュース一覧 |
 | POST | /api/used-news | Basic | 使用済みとして記録 |
+| POST | /api/videos/generate-from-latest | Basic | 最新ドラフトから動画生成 |
+| POST | /api/videos/generate-weekly-from-new-draft | Basic | 新規週次ドラフト生成から動画生成まで実行 |
+| GET | /api/videos | Basic | 生成済み動画一覧 |
+| GET | /api/videos/{video_id} | Basic | 生成済み動画メタデータ取得 |
+| GET | /api/videos/{video_id}/download | Basic | 動画ファイル取得 |
+| GET | /api/videos/{video_id}/thumbnail | Basic | サムネイル取得 |
+| POST | /api/videos/{video_id}/upload-youtube | Basic | YouTube へ限定公開でアップロード |
+| POST | /api/videos/{video_id}/publish | Basic | アップロード済み動画を公開に切り替え |
 
 ---
 

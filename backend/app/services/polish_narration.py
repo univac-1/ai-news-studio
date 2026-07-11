@@ -28,6 +28,20 @@ ZUNDAMON_LINE_MAX_CHARS = 40
 # ずんだもんの一言感想(reaction_line)は20〜30字程度を目安にするが、
 # Gemini出力のブレを許容するため採用判定はやや広めの上限にする
 ZUNDAMON_REACTION_MAX_CHARS = 30
+SPOKEN_SPEAKER_LABELS = ("AI専門家",)
+
+
+def sanitize_spoken_speaker_labels(text: str) -> str:
+    """音声・字幕用テキストに混入した内部の話者ラベルを除去する。"""
+    cleaned = text
+    for label in SPOKEN_SPEAKER_LABELS:
+        cleaned = re.sub(rf"{re.escape(label)}\s*([がはもをにへとで])", r"\1", cleaned)
+        cleaned = re.sub(rf"{re.escape(label)}\s*の", "", cleaned)
+        cleaned = cleaned.replace(label, "")
+    cleaned = re.sub(r"([、。！？!?])\1+", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.replace("次にが", "次に").replace("続いてが", "続いて")
+    return cleaned
 
 
 def _parse_visual(raw: object) -> SegmentVisual | None:
@@ -90,12 +104,14 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             f"以下のYouTube AIニュース動画ドラフトを、視聴維持率が上がる構成に書き換えてください。\n"
             f"視聴者はビジネスパーソン・開発者。信頼感を保ち、煽りすぎないこと。\n\n"
             "この動画は2話者(掛け合い)構成で、各ニュースは"
-            "「ずんだもん(導入)→AI専門家(解説)→ずんだもん(感想)」の3段構成です。\n"
+            "「ずんだもん(導入)→解説役(詳細解説)→ずんだもん(感想)」の3段構成です。\n"
             "・「ずんだもん」: 全体進行役。一人称は「ボク」、語尾に「〜のだ」「〜なのだ」を使う、明るく元気な口調。"
             "フック・オープニング・各ニュースの一言導入(zundamon_lines)・各ニュースの一言感想(zundamon_reactions)"
             "・まとめを担当。\n"
-            "・「AI専門家」: 各ニュースの詳細解説役。一人称は「私」、です・ます調、時々「〜ですね」を使う、"
+            "・「解説役」: 各ニュースの詳細解説役。一人称は「私」、です・ます調、時々「〜ですね」を使う、"
             "落ち着いたトーン。各ニュースの詳細解説(narrations)を担当。\n\n"
+            "重要: 出力する台本本文には「AI専門家」「解説役」のような話者名・役名を書かないこと。"
+            "誰が話すかはシステム側で制御するため、本文には発話内容だけを書くこと。\n\n"
             f"動画タイトル: {draft.title}\n\n"
             f"【現在のフック】\n{draft.hook}\n\n"
             f"【現在のオープニング】\n{draft.intro}\n\n"
@@ -107,7 +123,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             f"2. intro: 5〜20秒のオープニング原稿。前半で「この動画を見る価値(何本を何分で把握できるか)」を提示し、"
             f"後半は「ラインナップは画面のとおりです。それでは1本目からいきましょう」のように"
             f"テンポよく本編へつなぐ。{OPENING_MAX_CHARS}文字以内。ニュースタイトルの列挙はしない(画面に一覧が出る)。\n"
-            "3. narrations: 各セグメントの詳細解説ナレーション。「AI専門家」の口調(一人称は「私」、"
+            "3. narrations: 各セグメントの詳細解説ナレーション。解説役の口調(一人称は「私」、"
             "です・ます調、時々「〜ですね」を使う、落ち着いたトーン)で書く。"
             "「インパクト:」「アクション:」のようなラベル読み上げをやめて内容を文章に織り込む。"
             "「つまり何が重要か」「誰に影響するか」「視聴者が次に何を押さえるべきか」が明確に伝わる構成にする。"
@@ -127,11 +143,11 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             "4. zundamon_lines: 各セグメントの一言導入。「ずんだもん」の口調"
             "(一人称は「ボク」、語尾に「〜のだ」「〜なのだ」、明るく元気)で、"
             f"そのニュースの内容を{ZUNDAMON_LINE_MAX_CHARS}文字以内(目安30〜40字)で一言だけ紹介する。"
-            "詳細には踏み込まず、次にAI専門家が詳しく解説する前フリとして機能する短い一文にする。"
+            "詳細には踏み込まず、次の詳細解説への前フリとして機能する短い一文にする。"
             "narrationsと文体・視点が重複しないようにする。"
             "複数のモデル名・製品名を挙げる場合は「AとB」のように自然な日本語でつなぎ、"
             "「A, B」のような英語的なカンマ列挙はしない。\n"
-            "5. zundamon_reactions: 各セグメントについて、AI専門家の解説を受けてのずんだもんの一言感想。"
+            "5. zundamon_reactions: 各セグメントについて、詳細解説を受けてのずんだもんの一言感想。"
             "「ずんだもん」の口調(一人称は「ボク」、語尾に「〜のだ」「〜なのだ」、明るく元気)で、"
             f"{ZUNDAMON_REACTION_MAX_CHARS}文字以内(目安20〜30字)。"
             "zundamon_linesの内容を繰り返さず、解説内容への驚き・納得・ツッコミなどの反応にする。\n"
@@ -252,7 +268,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             )
             raw_zundamon_line = zundamon_lines_list[i]
             intro_line = (
-                raw_zundamon_line.strip()
+                sanitize_spoken_speaker_labels(raw_zundamon_line.strip())
                 if isinstance(raw_zundamon_line, str)
                 and raw_zundamon_line.strip()
                 and len(raw_zundamon_line.strip()) <= ZUNDAMON_LINE_MAX_CHARS
@@ -260,7 +276,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             )
             raw_zundamon_reaction = zundamon_reactions_list[i]
             reaction_line = (
-                raw_zundamon_reaction.strip()
+                sanitize_spoken_speaker_labels(raw_zundamon_reaction.strip())
                 if isinstance(raw_zundamon_reaction, str)
                 and raw_zundamon_reaction.strip()
                 and len(raw_zundamon_reaction.strip()) <= ZUNDAMON_REACTION_MAX_CHARS
@@ -269,7 +285,7 @@ async def polish_narration(draft: VideoPlanDraft) -> VideoPlanDraft:
             new_segments.append(
                 seg.model_copy(
                     update={
-                        "narration": narrations[i],
+                        "narration": sanitize_spoken_speaker_labels(narrations[i]),
                         "title_ja": title_ja,
                         "slide_title": f"#{seg.number} {title_ja}" if title_ja else seg.slide_title,
                         "intro_line": intro_line,
