@@ -103,7 +103,7 @@ def generate_weekly_video_plan(items: list[NewsItem]) -> VideoPlanDraft:
         narration = (
             f"{item.summary}\n"
             f"ポイントは、{item.impact}\n"
-            f"次のアクションとしては、{item.action}"
+            f"注目ポイントは、{item.action}"
         )
         rank_reason = shorten(item.impact.split("。")[0], RANK_REASON_MAX_CHARS) if item.impact else ""
         segments.append(

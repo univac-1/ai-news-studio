@@ -1303,7 +1303,7 @@ def _render_slide(spec: SlideSpec, path: Path, compact: bool = False) -> None:
         bullet_label_font = _load_font(26, bold=True)
         bullet_max_lines = _compact_max_lines(1 if spec.visual else 2, compact)
         y = 665 if spec.visual else 500
-        bullets = (("何が変わるか", spec.impact), ("次にやること", spec.action))
+        bullets = (("影響", spec.impact), ("注目ポイント", spec.action))
         for bullet_label, bullet_body in bullets:
             # アクセント色の正方形ビュレット + ラベル + 同じ行から始まる本文
             draw.rectangle((140, y + 11, 152, y + 23), fill=accent)

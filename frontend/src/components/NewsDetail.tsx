@@ -68,13 +68,13 @@ export function NewsDetail({ item }: NewsDetailProps) {
 
         <Separator />
 
-        <Section icon={<TrendingUp className="w-4 h-4 text-emerald-500" />} title="インパクト">
+        <Section icon={<TrendingUp className="w-4 h-4 text-emerald-500" />} title="影響">
           {item.impact}
         </Section>
 
         <Separator />
 
-        <Section icon={<Zap className="w-4 h-4 text-violet-500" />} title="アクション">
+        <Section icon={<Zap className="w-4 h-4 text-violet-500" />} title="注目ポイント">
           {item.action}
         </Section>
 

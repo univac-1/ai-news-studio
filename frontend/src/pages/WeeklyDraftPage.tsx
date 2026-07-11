@@ -55,8 +55,8 @@ function SegmentAccordion({ segment }: { segment: VideoSegment }) {
         <div className="px-3 pb-3 border-t bg-muted/20 space-y-2">
           {[
             ['要約', segment.summary],
-            ['インパクト', segment.impact],
-            ['アクション', segment.action],
+            ['影響', segment.impact],
+            ['注目ポイント', segment.action],
           ].map(([label, value]) => (
             <div key={label} className="pt-2">
               <p className="text-xs font-medium text-muted-foreground mb-0.5">{label}</p>

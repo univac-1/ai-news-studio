@@ -84,7 +84,7 @@ async def _fetch_meta_completions(segments: list[VideoSegment]) -> list[dict] | 
             f"- rank_reason: このニュースがなぜ重要かの一言理由。{RANK_REASON_MAX_CHARS}文字以内。\n"
             f"- summary: 元の要約を一行要約にした版。{SUMMARY_MAX_CHARS}文字以内。\n"
             f"- impact: 元のインパクトを要約した版。視聴者への影響。{IMPACT_MAX_CHARS}文字以内。\n"
-            f"- action: 元のアクションを要約した版。視聴者が次にやること。{ACTION_MAX_CHARS}文字以内。\n"
+            f"- action: 元のアクションを要約した版。視聴者が次に押さえる点。{ACTION_MAX_CHARS}文字以内。\n"
             "summary/impact/actionは元の文の事実を改変せず短く要約すること。誇張は禁止。\n\n"
             "出力はJSONのみ:\n"
             '{"segments": [{"title_ja": "...", "visual": {"type": "flow", "items": ["...", "...", "..."]}, '

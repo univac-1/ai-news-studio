@@ -108,8 +108,8 @@ export function VideoPlan({ priorityNews }: VideoPlanProps) {
                   {expandedSegments.has(seg.number) && (
                     <div className="px-3 pb-3 space-y-2 border-t bg-muted/20">
                       <Field label="要約" value={seg.summary} />
-                      <Field label="インパクト" value={seg.impact} />
-                      <Field label="視聴者へのアクション" value={seg.action} />
+                      <Field label="影響" value={seg.impact} />
+                      <Field label="注目ポイント" value={seg.action} />
                     </div>
                   )}
                 </div>
