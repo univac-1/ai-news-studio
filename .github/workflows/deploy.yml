@@ -74,6 +74,11 @@ jobs:
                         value: ${{ secrets.GCP_PROJECT_ID }}
                       - name: GEMINI_LOCATION
                         value: us-central1
+                      # ニュースソングの歌声(frame_decodeスタイルID)。3054=春歌ナナ(明るく元気)。
+                      # 他候補: 3070=満別花丸(元気) / 3024=WhiteCUL(たのしい) /
+                      # 3057=猫使アル(うきうき) / 3061=中国うさぎ(旧デフォルト)
+                      - name: VOICEVOX_SING_SPEAKER_ID
+                        value: "3054"
                     resources:
                       limits:
                         cpu: "2.0"
