@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -7,8 +9,28 @@ from fastapi.responses import FileResponse
 from .api import drafts, health, news, used_news, videos
 from .core.config import settings
 from .core.security import verify_credentials
+from .services.weekly_video_scheduler import weekly_video_scheduler_loop
 
-app = FastAPI(title="AI News Studio API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    stop_event = asyncio.Event()
+    scheduler_task: asyncio.Task[None] | None = None
+    if settings.WEEKLY_VIDEO_SCHEDULE_ENABLED:
+        scheduler_task = asyncio.create_task(weekly_video_scheduler_loop(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+
+
+app = FastAPI(title="AI News Studio API", version="0.1.0", lifespan=lifespan)
 
 if settings.APP_ENV == "development":
     app.add_middleware(

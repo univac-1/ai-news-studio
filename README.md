@@ -1,5 +1,7 @@
 # AI News Studio
 
+![AI News Studio hero](assets/readme/ai-news-studio-hero.png)
+
 AIニュース動画制作管理ツール。直近1週間の優先度Aニュースを自動収集し、週次動画ドラフトをワンクリックで生成します。
 
 ## 構成

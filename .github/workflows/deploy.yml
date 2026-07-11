@@ -79,6 +79,22 @@ jobs:
                       # 3057=猫使アル(うきうき) / 3061=中国うさぎ(旧デフォルト)
                       - name: VOICEVOX_SING_SPEAKER_ID
                         value: "3054"
+                      - name: WEEKLY_VIDEO_SCHEDULE_ENABLED
+                        value: "true"
+                      - name: WEEKLY_VIDEO_SCHEDULE_TIMEZONE
+                        value: Asia/Tokyo
+                      - name: WEEKLY_VIDEO_SCHEDULE_HOUR
+                        value: "8"
+                      - name: WEEKLY_VIDEO_SCHEDULE_MINUTE
+                        value: "0"
+                      - name: SMTP_HOST
+                        value: smtp.gmail.com
+                      - name: SMTP_PORT
+                        value: "587"
+                      - name: SMTP_USE_TLS
+                        value: "true"
+                      - name: SMTP_USE_SSL
+                        value: "false"
                     resources:
                       limits:
                         cpu: "2.0"
@@ -115,7 +131,7 @@ jobs:
             --region ${{ secrets.GCP_REGION }} \
             --platform managed \
             --container app \
-            --update-secrets BASIC_AUTH_USERNAME=basic-auth-username:latest,BASIC_AUTH_PASSWORD=basic-auth-password:latest
+            --update-secrets BASIC_AUTH_USERNAME=basic-auth-username:latest,BASIC_AUTH_PASSWORD=basic-auth-password:latest,WEEKLY_VIDEO_NOTIFY_TO=weekly-video-notify-to:latest,WEEKLY_VIDEO_NOTIFY_FROM=weekly-video-notify-from:latest,SMTP_USERNAME=smtp-username:latest,SMTP_PASSWORD=smtp-password:latest
 
           gcloud run services add-iam-policy-binding ${{ env.SERVICE }} \
             --region ${{ secrets.GCP_REGION }} \

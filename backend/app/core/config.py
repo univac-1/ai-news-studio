@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     YOUTUBE_CLIENT_SECRET: str = ""
     YOUTUBE_REFRESH_TOKEN: str = ""
     YOUTUBE_UPLOAD_ENABLED: bool = False
+    WEEKLY_VIDEO_SCHEDULE_ENABLED: bool = False
+    WEEKLY_VIDEO_SCHEDULE_TIMEZONE: str = "Asia/Tokyo"
+    WEEKLY_VIDEO_SCHEDULE_HOUR: int = 8
+    WEEKLY_VIDEO_SCHEDULE_MINUTE: int = 0
+    WEEKLY_VIDEO_NOTIFY_TO: str = ""
+    WEEKLY_VIDEO_NOTIFY_FROM: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
