@@ -133,16 +133,18 @@ def test_segment_motion_prompt_includes_news_context():
 
 def test_song_video_prompts_split_lyrics_and_include_news_context():
     prompts = video_assets._song_video_prompts(
-        ["ずんずんニュースだ", "きょうのわだいだ", "モデルがきたのだ", "いっしょにみるのだ"],
+        ["ずんずんエーアイニュースだ", "きょうのわだいだ", "モデルがきたのだ", "いっしょにみるのだ"],
         ["#1 category=hardware new AI chip"],
     )
 
     base, extension, outro = prompts
     # 前半2フレーズはベース生成、後半2フレーズは拡張で歌わせる。
     # 歌詞はVeoが歌唱として解釈しやすいダブルクォート引用で渡す
-    assert '"ずんずんニュースだ"' in base and '"きょうのわだいだ"' in base
+    assert '"ずんずんエーアイニュースだ"' in base and '"きょうのわだいだ"' in base
     assert '"モデルがきたのだ"' in extension and '"いっしょにみるのだ"' in extension
     assert "モデルがきたのだ" not in base
+    assert "never shorten it to アイ" in base
+    assert "never shorten it to アイ" in extension
     # ボーカルが主役で、インストのみの曲にならないことを明示する
     assert "WITH VOCALS" in base
     for prompt in (base, extension):

@@ -121,7 +121,7 @@ class TestGenerateSongLyrics:
                     ["ずんずんエーアイニュースだ", "だみー1", "だみー2"],
                     ["サンプルエーアイきたのだ", "だみー1", "だみー2"],
                     ["モデルとツールもチェックだ", "だみー1", "だみー2"],
-                    ["いっしょにチェックなのだ", "だみー1", "だみー2"],
+                    ["いっしょにチェックしよう", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -136,7 +136,7 @@ class TestGenerateSongLyrics:
             "ずんずんエーアイニュースだ",
             "サンプルエーアイきたのだ",
             "モデルとツールもチェックだ",
-            "いっしょにチェックなのだ",
+            "いっしょにチェックしよう",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -150,7 +150,7 @@ class TestGenerateSongLyrics:
                     ["ダメ", "ずんずんエーアイニュースだ", "だみー"],
                     ["AIニュース", "サンプルエーアイきたのだ", "だみー"],
                     ["みじかい", "モデルとツールもチェックだ", "だみー"],
-                    ["ながすぎるふれーずだよ", "いっしょにチェックなのだ", "だみー"],
+                    ["ながすぎるふれーずだよ", "いっしょにチェックしよう", "だみー"],
                 ]
             },
             ensure_ascii=False,
@@ -165,7 +165,7 @@ class TestGenerateSongLyrics:
             "ずんずんエーアイニュースだ",
             "サンプルエーアイきたのだ",
             "モデルとツールもチェックだ",
-            "いっしょにチェックなのだ",
+            "いっしょにチェックしよう",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -179,7 +179,7 @@ class TestGenerateSongLyrics:
                     ["ずんずんエーアイニュースだ", "だみー1", "だみー2"],
                     ["わだいのニュースをおとどけ", "サンプルエーアイきたのだ", "だみー"],
                     ["すごいはなしがきたのだよ", "モデルとツールもチェックだ", "だみー"],
-                    ["いっしょにチェックなのだ", "だみー1", "だみー2"],
+                    ["いっしょにチェックしよう", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -194,7 +194,7 @@ class TestGenerateSongLyrics:
             "ずんずんエーアイニュースだ",
             "サンプルエーアイきたのだ",
             "モデルとツールもチェックだ",
-            "いっしょにチェックなのだ",
+            "いっしょにチェックしよう",
         ]
         assert model.generate_content_async.call_count == 1
 
@@ -209,7 +209,7 @@ class TestGenerateSongLyrics:
                     ["ずんずんエーアイニュースだ", "だみー1", "だみー2"],
                     ["だめ", "だめだめ", "ぜんぶだめ"],
                     ["モデルとツールもチェックだ", "だみー1", "だみー2"],
-                    ["いっしょにチェックなのだ", "だみー1", "だみー2"],
+                    ["いっしょにチェックしよう", "だみー1", "だみー2"],
                 ]
             },
             ensure_ascii=False,
@@ -223,7 +223,7 @@ class TestGenerateSongLyrics:
         assert result[0] == "ずんずんエーアイニュースだ"
         assert result[1] == song.FALLBACK_LYRICS[1]
         assert result[2] == "モデルとツールもチェックだ"
-        assert result[3] == "いっしょにチェックなのだ"
+        assert result[3] == "いっしょにチェックしよう"
         # 未解決スロットが残る限り、上限の5回までリトライする
         assert model.generate_content_async.call_count == 5
 
@@ -236,7 +236,7 @@ class TestGenerateSongLyrics:
                     "ずんずんエーアイニュースだ",
                     "サンプルエーアイきたのだ",
                     "モデルとツールもチェックだ",
-                    "いっしょにチェックなのだ",
+                    "いっしょにチェックしよう",
                 ]
             },
             ensure_ascii=False,
@@ -251,7 +251,7 @@ class TestGenerateSongLyrics:
             "ずんずんエーアイニュースだ",
             "サンプルエーアイきたのだ",
             "モデルとツールもチェックだ",
-            "いっしょにチェックなのだ",
+            "いっしょにチェックしよう",
         ]
 
     @pytest.mark.asyncio
