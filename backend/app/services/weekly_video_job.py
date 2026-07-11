@@ -30,8 +30,9 @@ async def generate_weekly_video_from_new_draft() -> VideoGenerationResult:
     return VideoGenerationResult(draft=video_draft, video=refreshed or video)
 
 
-async def notify_weekly_video_success(result: VideoGenerationResult) -> None:
+def build_weekly_video_success_email_body(result: VideoGenerationResult) -> str:
     video = result.video
+    draft = result.draft
     lines = [
         "AI News Studio weekly video generation completed.",
         "",
@@ -41,12 +42,49 @@ async def notify_weekly_video_success(result: VideoGenerationResult) -> None:
         f"Duration: {video.duration_seconds} seconds",
     ]
     if video.youtube_url:
-        lines.append(f"YouTube: {video.youtube_url}")
+        lines.append(f"Unlisted YouTube URL: {video.youtube_url}")
+    if video.youtube_privacy:
+        lines.append(f"YouTube privacy: {video.youtube_privacy}")
+
+    lines.extend(
+        [
+            "",
+            "Video description:",
+            video.youtube_description or draft.description,
+        ]
+    )
+    if video.chapters:
+        lines.extend(["", "Chapters:", video.chapters])
+    if draft.hashtags:
+        lines.extend(["", "Hashtags:", " ".join(draft.hashtags)])
+
+    lines.extend(["", "Selected news:"])
+    for segment in draft.segments:
+        lines.extend(
+            [
+                "",
+                f"{segment.number}. {segment.headline}",
+                f"Summary: {segment.summary}",
+                f"Impact: {segment.impact}",
+                f"Action: {segment.action}",
+            ]
+        )
+        if segment.source:
+            lines.append(f"Source: {segment.source}")
+
+    if draft.reference_urls:
+        lines.extend(["", "Reference URLs:", *draft.reference_urls])
+
+    return "\n".join(lines)
+
+
+async def notify_weekly_video_success(result: VideoGenerationResult) -> None:
+    video = result.video
     try:
         await asyncio.to_thread(
             send_email_notification,
             f"[AI News Studio] Weekly video generated: {video.title}",
-            "\n".join(lines),
+            build_weekly_video_success_email_body(result),
         )
     except EmailNotificationConfigError:
         logger.warning("Weekly video notification is not configured; skipping success email")
